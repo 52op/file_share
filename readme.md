@@ -95,4 +95,4 @@ file_share 基于 Python 开发，使用了以下技术栈：
 
 ## 许可证
 
-file_share 采用 [MIT 许可证](https://chat.deepseek.com/a/chat/s/LICENSE)，你可以自由使用、修改和分发它。
+file_share 采用 [MIT 许可证](#)，你可以自由使用、修改和分发它。
