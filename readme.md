@@ -1,7 +1,7 @@
-# FileShare - HTTP 文件分享服务器
+# file_share - HTTP 文件分享服务器
 ![软件界面](https://github.com/52op/file_share/blob/master/preview_1.png "软件界面")
 
-FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分享工具，支持通过浏览器快速访问和下载共享的文件。它不仅可以作为前台窗口服务运行，还可以安装为 Windows 系统服务，实现开机自启动。无论是局域网内的文件共享，还是临时搭建一个文件下载服务器，FileShare 都能轻松应对。
+file_share 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分享工具，支持通过浏览器快速访问和下载共享的文件。它不仅可以作为前台窗口服务运行，还可以安装为 Windows 系统服务，实现开机自启动。无论是局域网内的文件共享，还是临时搭建一个文件下载服务器，file_share 都能轻松应对。
 
 ## 功能特性
 
@@ -9,7 +9,7 @@ FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分�
 
 - **多线程支持**：基于 Waitress 的多线程服务器，适合生产环境使用。
 
-- **IPv4 和 IPv6 双栈支持**：无论是传统的 IPv4 网络还是新一代的 IPv6 网络，FileShare 都能完美支持。
+- **IPv4 和 IPv6 双栈支持**：无论是传统的 IPv4 网络还是新一代的 IPv6 网络，file_share 都能完美支持。
 
 - **密码保护**：可以为每个共享目录设置独立的访问密码，确保文件安全。
 
@@ -19,7 +19,7 @@ FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分�
 
 - **自动清理**：支持自动清理用户打包下载产生的临时文件和过期的共享链接，避免磁盘空间浪费。
 
-- **系统服务支持**：可以将 FileShare 安装为 Windows 系统服务，实现开机自启动，无需手动操作。
+- **系统服务支持**：可以将 file_share 安装为 Windows 系统服务，实现开机自启动，无需手动操作。
 
 - **日志记录**：详细的日志记录功能，方便排查问题和监控服务状态。
 
@@ -27,19 +27,31 @@ FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分�
 
 - **局域网文件共享**：在办公室或家庭局域网内快速共享文件，无需借助第三方工具。
 
-- **临时文件服务器**：在需要临时搭建文件下载服务器时，FileShare 可以快速部署并提供服务。
+- **临时文件服务器**：在需要临时搭建文件下载服务器时，file_share 可以快速部署并提供服务。
 
-- **跨设备文件传输**：在不同设备之间传输文件，尤其是当设备之间无法直接连接时，FileShare 可以作为一个中转站。
+- **跨设备文件传输**：在不同设备之间传输文件，尤其是当设备之间无法直接连接时，file_share 可以作为一个中转站。
 
 ## 快速开始
 
 ### 1. 下载与运行
+#### a. 直接使用打包好的
+你可以从 [Release 页面](https://github.com/52op/file_share/releases) 下载 file_share 的打包版本，解压后直接运行 `file_share.exe`。
 
-你可以从 [Release 页面](https://github.com/52op/file_share/releases) 下载 FileShare 的打包版本，解压后直接运行 `file_share.exe`。
+#### b.自己编译
+下载压缩包，解压
+```
+# 安装依赖 可能不全，因为不是使用pip 生成的requirements ，提示少什么 自己pip install 什么 
+pip install -r requirements.txt
+# 打包成单文件
+pyinstaller main-onefile.spec
+# 打包成非单文件，方便改前端模板
+pyinstaller main-zip.spec
+```
+
 
 ### 2. 添加共享目录
 
-1. 运行 `FileShare.exe`，程序启动后会显示一个简洁的界面。
+1. 运行 `file_share.exe`，程序启动后会显示一个简洁的界面。
 
 2. 点击“添加目录”，选择你要共享的文件夹，设置显示名称和访问密码（可选）,也可以直接拖曳文件夹到程序窗口。
 
@@ -47,7 +59,7 @@ FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分�
 ![软件界面](https://github.com/52op/file_share/blob/master/preview_2.png "软件界面")
 ### 3. 启动服务
 
-1. 点击“启动服务”按钮，FileShare 会显示一个访问链接。
+1. 点击“启动服务”按钮，file_share 会显示一个访问链接。
 
 2. 在浏览器中输入该链接，访问共享的文件。
 
@@ -57,11 +69,11 @@ FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分�
 
 ### 5. 安装为系统服务
 
-如果你希望 FileShare 在后台运行，并且开机自启动，可以点击“安装为系统服务”按钮。安装完成后，FileShare 将以 Windows 服务的形式运行，无需手动启动。
+如果你希望 file_share 在后台运行，并且开机自启动，可以点击“安装为系统服务”按钮。安装完成后，file_share 将以 Windows 服务的形式运行，无需手动启动。
 
 ## 技术细节
 
-FileShare 基于 Python 开发，使用了以下技术栈：
+file_share 基于 Python 开发，使用了以下技术栈：
 
 - **Flask**：轻量级的 Web 框架，用于处理 HTTP 请求和响应。
 
@@ -79,8 +91,8 @@ FileShare 基于 Python 开发，使用了以下技术栈：
 
 ## 贡献与反馈
 
-如果你有任何问题或建议，欢迎通过邮件（[letvar@qq.com](mailto:letvar@qq.com)）与我联系。也欢迎提交 Issue 或 Pull Request，帮助改进 FileShare。
+如果你有任何问题或建议，欢迎通过邮件（[letvar@qq.com](mailto:letvar@qq.com)）与我联系。也欢迎提交 Issue 或 Pull Request，帮助改进 file_share。
 
 ## 许可证
 
-FileShare 采用 [MIT 许可证](https://chat.deepseek.com/a/chat/s/LICENSE)，你可以自由使用、修改和分发它。
+file_share 采用 [MIT 许可证](https://chat.deepseek.com/a/chat/s/LICENSE)，你可以自由使用、修改和分发它。
