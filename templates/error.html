@@ -1,0 +1,16 @@
+{% extends "header.html" %}
+{% block content %}
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+    <div class="container">
+        <a class="navbar-brand" href="/">文件分享服务</a>
+    </div>
+</nav>
+<div class="container text-center mt-5">
+    <h1 class="display-1">{{ error_code }}</h1>
+    <p class="lead">{{ message }}</p>
+    <a href="/" class="btn btn-primary mt-3">返回首页</a>
+</div>
+
+
+{% endblock %}

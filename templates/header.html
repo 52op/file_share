@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <title>{{ pageMark|default("") }} - FS文件分享服务工具 - letvar@qq.com</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="FS文件分享服务工具，提供高效、安全的文件共享服务。支持多平台访问，简单易用，适合个人和企业使用。">
+    <meta name="keywords" content="文件分享, 文件共享, http文件服务器, 文件传输, 文件管理, 文件服务, letvar@qq.com">
+    <meta name="author" content="letvar@qq.com">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <script src="/static/customAlert.js"></script>
+
+    <!-- 内联加载中效果的 CSS -->
+    <style>
+        /* 加载中效果 */
+        #loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #f8f9fa;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* 原来的关键 CSS */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f8f9fa;
+            transition: opacity 0.2s ease-in-out; /* 添加过渡效果 */
+        }
+        .navbar {
+            margin-bottom: 20px;
+        }
+        .dropdown-menu .container {
+            max-width: 600px; /* Adjust this value to suit your layout */
+        }
+        .dropdown-menu .row {
+            flex-wrap: nowrap; /* Prevent row wrapping */
+        }
+        @media (max-width: 768px) {
+            .dropdown-menu .container {
+                max-width: 100%; /* 使容器宽度适应屏幕 */
+            }
+            .dropdown-menu .row {
+                flex-wrap: wrap; /* 允许换行 */
+            }
+        }
+        .form-control:focus {
+            border-color: #80bdff;
+            box-shadow: 0 0 0 0.2rem rgba(0,123,255,.25);
+        }
+
+        @media (max-width: 768px) {
+            .d-flex {
+                width: 100%;
+                margin: 10px 0;
+            }
+        }
+        .input-group.search {
+            width: 300px;
+        }
+
+        .input-group.search .form-control {
+            border-right: none;
+        }
+
+        .input-group.search .btn {
+            border-left: none;
+            background-color: white;
+        }
+
+        .input-group.search .btn:hover {
+            background-color: #f8f9fa;
+        }
+        .input-group.search .btn-clear {
+            border-left: none;
+            border-right: none;
+            background-color: white;
+            padding: 0 8px;
+            z-index: 4;
+        }
+
+        .input-group.search .btn-clear:hover {
+            background-color: #f8f9fa;
+        }
+    </style>
+
+    <!-- 动态加载保存的主题样式 -->
+    <script>
+        const THEME_KEY = 'selectedTheme';
+        const THEME_NAME_KEY = 'selectedThemeName';
+
+        // 获取保存的主题
+        const savedTheme = localStorage.getItem(THEME_KEY) || '/static/bootswatch/Default.min.css';
+        const savedThemeName = localStorage.getItem(THEME_NAME_KEY) || 'Default';
+
+        // 动态插入主题样式
+        const themeLink = document.createElement('link');
+        themeLink.id = 'bootstrapTheme';
+        themeLink.rel = 'stylesheet';
+        themeLink.href = savedTheme;
+        document.head.appendChild(themeLink);
+
+        // 监听主题样式加载完成事件
+        themeLink.onload = () => {
+            // 隐藏加载中效果
+            document.getElementById('loading').style.display = 'none';
+        };
+    </script>
+
+    <!-- 其他样式文件 -->
+    <link href="/static/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
+    <link href="/static/style.css" rel="stylesheet">
+
+</head>
+<body class="bg-light">
+<!-- 加载中效果 -->
+<div id="loading">
+    <div class="loader"></div>
+</div>
+
+<!-- Navigation Bar -->
+<nav class="navbar navbar-expand-lg navbar-light bg-light">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="/">File Share</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ms-auto">
+                {% if request.endpoint == 'list_dir' %}
+                <!-- 添加搜索框 -->
+                <li class="nav-item me-3">
+                    <div class="input-group search">
+                        <input type="text" class="form-control" id="fileSearch" placeholder="搜索文件...">
+                        <button class="btn btn-outline-info btn-clear" type="button" style="display: none;">
+                            <i class="bi bi-x text-primary"></i>
+                        </button>
+                        <button class="btn btn-outline-info" type="button" id="searchBtn">
+                            <i class="bi bi-search text-primary"></i>
+                        </button>
+                    </div>
+                </li>
+                {% endif %}
+
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="themeSelectorDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        选择主题
+                    </a>
+                    <div class="dropdown-menu dropdown-menu-end" aria-labelledby="themeSelectorDropdown">
+                        <div class="container">
+                            <div class="row" id="themeContainer">
+                                <!-- 主题选项将通过 JavaScript 动态插入到这里 -->
+                            </div>
+                        </div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+    </div>
+</nav>
+
+{% block content %}{% endblock %}
+<script>
+    function switchTheme(themeUrl, themeName) {
+        const themeLink = document.getElementById('bootstrapTheme');
+        if (themeLink) {
+            themeLink.href = themeUrl;
+            localStorage.setItem(THEME_KEY, themeUrl);
+            localStorage.setItem(THEME_NAME_KEY, themeName);
+            document.getElementById('themeSelectorDropdown').textContent = themeName;
+
+            // 添加过渡效果
+            document.body.style.opacity = '0';
+            setTimeout(() => {
+                document.body.style.opacity = '1';
+            }, 100);
+        } else {
+            console.error("Theme link element not found.");
+        }
+    }
+
+    function generateThemeOptions(themes) {
+        const themeContainer = document.getElementById('themeContainer');
+        themeContainer.innerHTML = '';
+
+        const defaultTheme = "Default";
+        const otherThemes = themes.filter(theme => theme.name !== defaultTheme);
+
+        let column = document.createElement('div');
+        column.classList.add('col-6', 'col-md-4', 'col-lg-3');
+        themeContainer.appendChild(column);
+
+        const defaultThemeLink = document.createElement('a');
+        defaultThemeLink.classList.add('dropdown-item');
+        defaultThemeLink.href = '#';
+        defaultThemeLink.textContent = defaultTheme;
+        defaultThemeLink.onclick = function () {
+            switchTheme(themes.find(theme => theme.name === defaultTheme).url, defaultTheme);
+        };
+        column.appendChild(defaultThemeLink);
+
+        otherThemes.forEach((theme, index) => {
+            if (index % 8 === 0) {
+                column = document.createElement('div');
+                column.classList.add('col-6', 'col-md-4', 'col-lg-3');
+                themeContainer.appendChild(column);
+            }
+
+            const themeLink = document.createElement('a');
+            themeLink.classList.add('dropdown-item');
+            themeLink.href = '#';
+            themeLink.textContent = theme.name;
+            themeLink.onclick = function () {
+                switchTheme(theme.url, theme.name);
+            };
+            column.appendChild(themeLink);
+        });
+    }
+
+    function applySavedTheme() {
+        const savedTheme = localStorage.getItem(THEME_KEY);
+        const savedThemeName = localStorage.getItem(THEME_NAME_KEY);
+        if (savedTheme) {
+            const themeLink = document.getElementById('bootstrapTheme');
+            if (themeLink) {
+                themeLink.href = savedTheme;
+                document.getElementById('themeSelectorDropdown').textContent = savedThemeName || '选择主题';
+            } else {
+                console.error("Theme link element not found.");
+            }
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const themes = JSON.parse('{{ themes | tojson | safe }}');
+        generateThemeOptions(themes);
+
+        // 应用保存的主题
+        applySavedTheme();
+
+        // 监听 localStorage 变化，确保主题在多个标签页中同步
+        window.addEventListener('storage', (event) => {
+            if (event.key === THEME_KEY) {
+                const themeLink = document.getElementById('bootstrapTheme');
+                if (themeLink) {
+                    themeLink.href = event.newValue;
+                }
+            }
+            if (event.key === THEME_NAME_KEY) {
+                document.getElementById('themeSelectorDropdown').textContent = event.newValue || '选择主题';
+            }
+        });
+    });
+</script>
+<script src="/static/popperjs/popper.min.js" defer></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

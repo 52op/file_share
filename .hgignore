@@ -1,0 +1,46 @@
+# 忽略虚拟环境目录
+venv/
+.venv/
+
+backup/
+.backup/
+
+logs/
+.logs/
+
+temp/
+.temp/
+
+flask_session/
+.flask_session/
+
+.idea/
+
+# 忽略Python编译文件
+*.pyc
+__pycache__/
+
+# 忽略Jupyter Notebook的检查点文件
+.ipynb_checkpoints/
+
+# 忽略Python的egg文件和egg-info目录
+*.egg
+*.egg-info/
+
+*.json
+*.json.backup*
+打包.txt
+*.xml
+bak.md
+
+# 忽略Python的dist目录
+dist/
+
+# 忽略Python的build目录
+build/
+
+# 忽略Python的.svn目录
+.svn/
+
+# 忽略Python的.pycache目录
+__pycache__/

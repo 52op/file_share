@@ -1,0 +1,296 @@
+{% extends "header.html" %}
+{% block content %}
+    <div class="container py-4">
+        <!-- Search Section -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <form id="searchForm" class="row g-3">
+                    <div class="col-md-4">
+                        <input type="text" class="form-control" placeholder="模糊匹配Token" id="searchToken">
+                    </div>
+                    <div class="col-md-2">
+                        <input type="text" class="form-control" placeholder="分享名称" id="searchName">
+                    </div>
+                    <div class="col-md-2">
+                        <input type="text" class="form-control" placeholder="目录" id="searchPath">
+                    </div>
+                    <div class="col-md-2">
+                        <input type="date" class="form-control" id="dateStart">
+                    </div>
+                    <div class="col-md-2">
+                        <input type="date" class="form-control" id="dateEnd">
+                    </div>
+                    <div class="col-12">
+                        <button type="submit" class="btn btn-primary me-2">
+                            <i class="bi bi-search"></i> 搜索
+                        </button>
+                        <button type="button" class="btn btn-danger me-2" onclick="clearAllShares()">
+                            <i class="bi bi-trash"></i> 清空所有
+                        </button>
+                        <button type="button" class="btn btn-warning" onclick="clearExpiredShares()">
+                            <i class="bi bi-clock-history"></i> 清理过期
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Bulk Actions -->
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="selectAll" onchange="toggleSelectAll()">
+                <label class="form-check-label" for="selectAll">全选</label>
+            </div>
+            <button class="btn btn-danger" onclick="deleteSelected()">
+                <i class="bi bi-trash"></i> 删除选中
+            </button>
+        </div>
+
+        <!-- Share Cards -->
+        <div class="row g-4" id="shareList">
+            <!-- JavaScript will populate this -->
+        </div>
+    </div>
+
+    <!-- Edit Share Modal -->
+    <div class="modal fade" id="editShareModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">编辑分享</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="editShareForm">
+                    <div class="modal-body">
+                        <input type="hidden" id="editToken">
+                        <div class="mb-3">
+                            <label class="form-label">分享名称</label>
+                            <input type="text" class="form-control" id="editName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">访问密码</label>
+                            <input type="text" class="form-control" id="editPassword">
+                            <small class="text-muted">留空表示无密码</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">管理密码</label>
+                            <input type="text" class="form-control" id="editManageCode" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">过期时间</label>
+                            <input type="datetime-local" class="form-control" id="editExpireTime">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">描述</label>
+                            <textarea class="form-control" id="editDesc" rows="3"></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <script src="/static/bootstrap/js/bootstrap.bundle.min.js"></script>
+
+{% endblock %}
+{% block scripts %}
+    <script>
+        let shares = [];
+        let sharePath = '{{ share_path|default("") }}'
+
+        async function loadShares(params = {}) {
+            try {
+                // 如果存在 share_path，添加到查询参数中
+                if (sharePath) {
+                    params.share_path = sharePath;
+                    document.getElementById('searchPath').value = sharePath;
+                }
+                const queryString = new URLSearchParams(params).toString();
+                const response = await fetch(`/api/shares?${queryString}`);
+                shares = await response.json();
+                renderShares();
+            } catch (error) {
+                alert('加载失败');
+            }
+        }
+
+        function renderShares() {
+            const shareList = document.getElementById('shareList');
+            shareList.innerHTML = shares.map(share => `
+        <div class="col-md-6 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="form-check float-end">
+                        <input class="form-check-input share-checkbox" type="checkbox" value="${share.token}">
+                    </div>
+                    <h5 class="card-title text-truncate">${share.name}</h5>
+                    <p class="card-text small">
+                        <span class="badge bg-secondary">${share.size}</span>
+                        ${share.password ? '<span class="badge bg-warning">已加密</span>' : ''}
+                    </p>
+                    <div class="small text-muted mb-2">
+                        <div>Token: ${share.token}</div>
+                        <div>创建: ${new Date(share.create_time).toLocaleString()}</div>
+                        <div>过期: ${share.expire_time ? new Date(share.expire_time).toLocaleString() : '永久'}</div>
+                        ${share.desc ? `<div>描述: ${share.desc}</div>` : ''}
+                    </div>
+                    <div class="btn-group w-100">
+                        <button class="btn btn-sm btn-outline-primary" onclick="copyShareUrl('${share.token}')">
+                            <i class="bi bi-clipboard"></i> 复制
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="editShare('${share.token}')">
+                            <i class="bi bi-pencil"></i> 编辑
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteShare('${share.token}')">
+                            <i class="bi bi-trash"></i> 删除
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+        }
+
+        document.getElementById('searchForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            sharePath = document.getElementById('searchPath').value;
+            const params = {
+                token: document.getElementById('searchToken').value,
+                name: document.getElementById('searchName').value,
+                date_start: document.getElementById('dateStart').value,
+                date_end: document.getElementById('dateEnd').value
+            };
+            loadShares(params);
+        });
+
+        async function editShare(token) {
+            const share = shares.find(s => s.token === token);
+            if (!share) return;
+
+            document.getElementById('editToken').value = token;
+            document.getElementById('editName').value = share.name;
+            document.getElementById('editPassword').value = share.password || '';
+            document.getElementById('editManageCode').value = share.manage_code;
+            document.getElementById('editDesc').value = share.desc || '';
+            if (share.expire_time) {
+                document.getElementById('editExpireTime').value = new Date(share.expire_time)
+                    .toISOString().slice(0, 16);
+            }
+
+            new bootstrap.Modal(document.getElementById('editShareModal')).show();
+        }
+
+        document.getElementById('editShareForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const token = document.getElementById('editToken').value;
+            const data = {
+                name: document.getElementById('editName').value,
+                password: document.getElementById('editPassword').value,
+                manage_code: document.getElementById('editManageCode').value,
+                desc: document.getElementById('editDesc').value,
+                expire_time: document.getElementById('editExpireTime').value
+            };
+
+            try {
+                const response = await fetch(`/api/shares/${token}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                if (!response.ok) throw new Error('更新失败');
+                bootstrap.Modal.getInstance(document.getElementById('editShareModal')).hide();
+                loadShares();
+            } catch (error) {
+                alert('更新失败');
+            }
+        });
+
+        async function deleteShare(token) {
+            if (await FS_confirm('确定要删除这个项目吗？', '删除确认')) {
+                try {
+                    const response = await fetch(`/api/shares/${token}`, {method: 'DELETE'});
+                    if (!response.ok) throw new Error('删除失败');
+                    loadShares();
+                } catch (error) {
+                    alert('删除失败');
+                }
+            }
+        }
+
+        function toggleSelectAll() {
+            const checked = document.getElementById('selectAll').checked;
+            document.querySelectorAll('.share-checkbox').forEach(cb => cb.checked = checked);
+        }
+
+        async function deleteSelected() {
+            const selected = Array.from(document.querySelectorAll('.share-checkbox:checked'))
+                .map(cb => cb.value);
+            if (!selected.length || !confirm(`确定要删除选中的 ${selected.length} 个分享？`)) return;
+
+            try {
+                const response = await fetch('/api/shares/batch-delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tokens: selected})
+                });
+                if (!response.ok) throw new Error('删除失败');
+                loadShares();
+            } catch (error) {
+                alert('删除失败');
+            }
+        }
+
+        async function clearAllShares() {
+            if (!confirm('确定要清空所有分享？')) return;
+            try {
+                const response = await fetch('/api/shares/clear-all', {method: 'POST'});
+                if (!response.ok) throw new Error('清空失败');
+                loadShares();
+            } catch (error) {
+                alert('清空失败');
+            }
+        }
+
+        async function clearExpiredShares() {
+            try {
+                const response = await fetch('/api/shares/clear-expired', {method: 'POST'});
+                if (!response.ok) throw new Error('清理失败');
+                loadShares();
+            } catch (error) {
+                alert('清理失败');
+            }
+        }
+
+        function copyShareUrl(token) {
+            const url = `${window.location.origin}/s/${token}`;
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(url).then(() => {
+                    alert('链接已复制到剪贴板');
+                }).catch(err => {
+                    console.error('复制失败:', err);
+                    alert('复制失败，请手动复制');
+                });
+            } else {
+                // 使用隐藏的文本输入框复制
+                const tempInput = document.createElement('input');
+                tempInput.value = url;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                try {
+                    document.execCommand('copy');
+                    alert('链接已复制到剪贴板');
+                } catch (err) {
+                    console.error('复制失败:', err);
+                    alert('复制失败，请手动复制');
+                }
+                document.body.removeChild(tempInput);
+            }
+        }
+
+        // Initial load
+        loadShares();
+    </script>
+{% endblock %}

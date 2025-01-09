@@ -1,0 +1,158 @@
+.workspace-container {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    width: 800px;
+    height: 600px;
+    background: #1e1e1e;
+    border: 1px solid #333;
+    border-radius: 4px;
+    display: none;
+    flex-direction: column;
+    box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    z-index: 1000;
+    min-width: 300px;
+    min-height: 200px;
+}
+
+.workspace-header {
+    display: flex;
+    justify-content: space-between;
+    background: #2d2d2d;
+    padding: 4px;
+    border-bottom: 1px solid #333;
+    cursor: move;
+}
+
+.tab-list {
+    display: flex;
+    overflow-x: auto;
+    flex: 1;
+}
+
+.tab {
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    background: #383838;
+    border-right: 1px solid #444;
+    color: #ccc;
+    cursor: pointer;
+    user-select: none;
+    max-width: 200px;
+    min-width: 100px;
+}
+
+.tab.active {
+    background: #1e1e1e;
+    color: #fff;
+}
+
+.tab-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tab-close {
+    margin-left: 8px;
+    opacity: 0.6;
+}
+
+.tab-close:hover {
+    opacity: 1;
+}
+
+.workspace-controls button {
+    background: none;
+    border: none;
+    color: #ccc;
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+.workspace-controls button:hover {
+    background: #444;
+}
+
+.workspace-body {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+.editor-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: none;
+}
+
+.workspace-statusbar {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 8px;
+    background: #2d2d2d;
+    border-top: 1px solid #333;
+    color: #ccc;
+    font-size: 12px;
+}
+
+.status-text {
+    flex: 1;
+}
+
+.status-success {
+    color: #4caf50;
+}
+
+.status-error {
+    color: #f44336;
+}
+
+.status-info {
+    color: #2196f3;
+}
+
+.workspace-container.minimized {
+    width: 200px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    overflow: hidden;
+}
+
+.workspace-container.minimized .workspace-body,
+.workspace-container.minimized .workspace-statusbar {
+    display: none;
+}
+
+.workspace-container.maximized {
+    width: 100% !important;
+    height: 100% !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+}
+
+.resize-handle {
+    position: absolute;
+    background: transparent;
+    z-index: 1001;
+}
+
+.resize-n { top: -3px; left: 0; right: 0; height: 6px; cursor: n-resize; }
+.resize-s { bottom: -3px; left: 0; right: 0; height: 6px; cursor: s-resize; }
+.resize-e { right: -3px; top: 0; bottom: 0; width: 6px; cursor: e-resize; }
+.resize-w { left: -3px; top: 0; bottom: 0; width: 6px; cursor: w-resize; }
+.resize-ne { top: -3px; right: -3px; width: 6px; height: 6px; cursor: ne-resize; }
+.resize-nw { top: -3px; left: -3px; width: 6px; height: 6px; cursor: nw-resize; }
+.resize-se { bottom: -3px; right: -3px; width: 6px; height: 6px; cursor: se-resize; }
+.resize-sw { bottom: -3px; left: -3px; width: 6px; height: 6px; cursor: sw-resize; }
+
+.resize-handle:hover {
+    background: rgba(0, 120, 215, 0.4);
+}

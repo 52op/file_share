@@ -1,0 +1,24 @@
+{% extends "header.html" %}
+{% block content %}
+<div class="container mt-5">
+    <div class="alert alert-danger" role="alert">
+        <h4 class="alert-heading">访问受限</h4>
+        <p>由于密码错误次数过多，您的IP已被临时限制访问。</p>
+        <p>请等待 <span id="countdown">{{ remaining_time }}</span> 秒后重试。</p>
+    </div>
+</div>
+
+<script>
+let countdown = {{ remaining_time }};
+const countdownElement = document.getElementById('countdown');
+
+const timer = setInterval(() => {
+    countdown--;
+    countdownElement.textContent = countdown;
+    if (countdown <= 0) {
+        clearInterval(timer);
+        window.location.reload();
+    }
+}, 1000);
+</script>
+{% endblock %}

@@ -1,0 +1,92 @@
+.image-viewer-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+    z-index: 9999;
+    display: none;
+    flex-direction: column;
+}
+
+.image-viewer-modal.active {
+    display: flex;
+}
+
+.viewer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+}
+
+.viewer-title {
+    font-size: 1.1em;
+    margin-right: 20px;
+}
+
+.viewer-controls button {
+    background: none;
+    border: none;
+    color: white;
+    padding: 5px 10px;
+    cursor: pointer;
+    opacity: 0.8;
+}
+
+.viewer-controls button:hover {
+    opacity: 1;
+}
+
+.viewer-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: grab;
+}
+
+.viewer-image {
+    max-width: none;
+    max-height: none;
+    transform-origin: center center;
+    transition: transform 0.1s ease-out;
+}
+
+.viewer-toolbar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    gap: 10px;
+}
+
+.viewer-toolbar button {
+    background: none;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.viewer-toolbar button:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.zoom-select {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 5px;
+    border-radius: 4px;
+}
+
+.zoom-select option {
+    background: #333;
+}
