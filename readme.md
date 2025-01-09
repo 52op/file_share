@@ -1,4 +1,5 @@
 # FileShare - HTTP 文件分享服务器
+![软件界面](https://github.com/52op/file_share/blob/master/preview_1.png "软件界面")
 
 FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分享工具，支持通过浏览器快速访问和下载共享的文件。它不仅可以作为前台窗口服务运行，还可以安装为 Windows 系统服务，实现开机自启动。无论是局域网内的文件共享，还是临时搭建一个文件下载服务器，FileShare 都能轻松应对。
 
@@ -40,10 +41,10 @@ FileShare 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分�
 
 1. 运行 `FileShare.exe`，程序启动后会显示一个简洁的界面。
 
-2. 点击“添加目录”，选择你要共享的文件夹，设置显示名称和访问密码（可选）。
+2. 点击“添加目录”，选择你要共享的文件夹，设置显示名称和访问密码（可选）,也可以直接拖曳文件夹到程序窗口。
 
 3. 你可以添加多个共享目录。
-
+![软件界面](https://github.com/52op/file_share/blob/master/preview_2.png "软件界面")
 ### 3. 启动服务
 
 1. 点击“启动服务”按钮，FileShare 会显示一个访问链接。
@@ -69,12 +70,12 @@ FileShare 基于 Python 开发，使用了以下技术栈：
 - **Tkinter**：Python 的标准 GUI 库，用于构建程序界面。
 
 - **TTKBootstrap**：基于 Tkinter 的现代化主题库，使界面更加美观。
-
+![前端WEB界面](https://github.com/52op/file_share/blob/master/preview_3.png "前端WEB界面")
+![图片预览](https://github.com/52op/file_share/blob/master/preview_4.png "图片预览")
+![在线代码类文档预览编辑](https://github.com/52op/file_share/blob/master/preview_5.png "在线代码类文档预览编辑")
 ## 未来计划
 
-- **跨平台支持**：目前 FileShare 主要支持 Windows 系统，未来计划增加对 Linux 和 macOS 的支持。
-
-- **更多安全选项**：增加更多的安全选项，如 IP 白名单、访问频率限制等。
+- 没有计划
 
 ## 贡献与反馈
 
