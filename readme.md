@@ -10,7 +10,7 @@ file_share 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分
 - 然后就是开了ipv6的监听，没公网IPV4也不愁了，自己家办公室各种地方的机器一运行，文件想怎么下都行
 - 配合我另外一个小工具 [ddns_manager](https://github.com/52op/ddns_manager)
 -  只要有个域名就可以实现 只要有ipv6的都可以实现一个文件在线WEB共享服务
-- **效果展示:** [http://v6.sztcrs.com](http://v6.sztcrs.com)
+- **效果展示:** [http://v6.sztcrs.com:12345](http://v6.sztcrs.com:12345) (你的网络必须支持ipv6才能访问)
 
 ## 功能特性
 
