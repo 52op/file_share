@@ -1329,6 +1329,7 @@ class FileShareApp:
         config.save()
         # 保存后立即重新加载配置
         self.load_config()
+        self.check_and_prompt_restart()
         flask_app.logger.info(f"配置已保存并实时生效")
         # 添加详细日志
         # flask_app.logger.info(f"配置已保存，当前共享目录配置:")
@@ -1889,6 +1890,18 @@ class FileShareApp:
 
     def uninstall_service(self):
         self.force_delete_service()
+
+    def check_and_prompt_restart(self):
+        if self.service_status == 4:
+            if tkmessagebox.askyesno("服务重启", "检测到后台服务正在运行，需要重启服务使新配置生效。是否现在重启？"):
+                self.restart_service()
+
+    def restart_service(self):
+        try:
+            win32serviceutil.RestartService("FileShareService")
+            return True
+        except Exception as e:
+            return False
 
 
 def main():
