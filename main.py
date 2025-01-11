@@ -59,25 +59,32 @@ _loguru_initialized = False  # 全局标志，确保 loguru 只初始化一次
 def setup_service_logger(flask_app=None):
     """设置服务日志"""
     global _loguru_initialized
+
     # 获取日志目录
     log_dir = os.path.join(get_app_path(), 'logs')
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # 禁用默认的 stderr 输出（可选）
-    loguru_logger.remove()
-    # 配置 loguru 日志处理器（只初始化一次）
+    # 只在第一次初始化时设置日志处理器
     if not _loguru_initialized:
+        # 移除默认处理器
+        loguru_logger.remove()
+
+        # 添加文件处理器
+        log_file = os.path.join(log_dir, 'service_{time:YYYYMMDD}.log')
         loguru_logger.add(
-            os.path.join(log_dir, 'service_{time:YYYYMMDD}.log'),
+            log_file,
             rotation="00:00",
             retention="15 days",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            format="{time:YYYY-MM-DD HH:mm:ss} | PID:{process} | {level} | {message}",
             level="INFO",
-            enqueue=True  # 确保日志立即刷新
+            enqueue=True,
+            backtrace=True,  # 添加异常追踪
+            diagnose=True  # 添加诊断信息
         )
+
         _loguru_initialized = True
-        loguru_logger.info("loguru 日志处理器已添加")  # 调试日志
+        loguru_logger.info("日志系统初始化完成")
 
     # 配置 logging
     logging.basicConfig(level=logging.INFO)
@@ -555,24 +562,30 @@ class FileShareService(win32serviceutil.ServiceFramework):
     _svc_description_ = "提供文件共享Web服务"
 
     def __init__(self, args):
-        global cleanup_thread_running
-        win32serviceutil.ServiceFramework.__init__(self, args)
-        self.stop_event = win32event.CreateEvent(None, 0, 0, None)
-        self.server = None
-        self.cleanup_thread_running = cleanup_thread_running
+        try:
+            global cleanup_thread_running
+            win32serviceutil.ServiceFramework.__init__(self, args)
+            self.stop_event = win32event.CreateEvent(None, 0, 0, None)
+            self.server = None
+            self.cleanup_thread_running = cleanup_thread_running
 
-        # 设置工作目录为可执行文件所在目录
-        os.chdir(os.path.dirname(os.path.abspath(sys.executable)))
-        # 设置环境变量
-        os.environ['PYTHONPATH'] = os.path.dirname(os.path.abspath(__file__))
-        # 初始化日志
-        self.logger = setup_service_logger()
+            # 设置工作目录为可执行文件所在目录
+            os.chdir(os.path.dirname(os.path.abspath(sys.executable)))
+
+            # 确保日志目录存在并可写
+            log_dir = os.path.join(get_app_path(), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+
+            # 初始化日志
+            self.logger = setup_service_logger()
+            self.logger.info("服务初始化完成")
+        except Exception as e:
+            # 使用 Windows 事件日志记录初始化错误
+            servicemanager.LogErrorMsg(f"服务初始化失败: {str(e)}")
+            raise
 
     def SvcDoRun(self):
         try:
-            # 确保 loguru 初始化
-            self.logger = setup_service_logger()
-            self.logger.info("服务启动，日志系统已初始化")  # 测试日志
             # 等待配置文件就绪
             max_retries = 10
             retry_count = 0
