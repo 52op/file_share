@@ -1,5 +1,6 @@
 import json
 import logging
+from loguru import logger as loguru_logger
 import os
 import re
 import socket
@@ -39,7 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def get_app_path(tempdir=False):
-    """获取应用程序路径"""
+    """获取应用程序路径 传True取临时文件夹路径"""
     if getattr(sys, 'frozen', False):
         if tempdir:
             # 打包成单文件后程序运行生成的临时文件夹路径常用于取打包在EXE中的资源文件路径 如窗口图标等
@@ -52,54 +53,59 @@ def get_app_path(tempdir=False):
         return os.path.dirname(os.path.abspath(__file__))
 
 
-def setup_service_logger():
-    """设置服务日志"""
-    from datetime import datetime
+_loguru_initialized = False  # 全局标志，确保 loguru 只初始化一次
 
+
+def setup_service_logger(flask_app=None):
+    """设置服务日志"""
+    global _loguru_initialized
+    # 获取日志目录
     log_dir = os.path.join(get_app_path(), 'logs')
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # 使用固定的基础日志文件名
-    log_file = os.path.join(log_dir, 'service.log')
+    # 禁用默认的 stderr 输出（可选）
+    loguru_logger.remove()
+    # 配置 loguru 日志处理器（只初始化一次）
+    if not _loguru_initialized:
+        loguru_logger.add(
+            os.path.join(log_dir, 'service_{time:YYYYMMDD}.log'),
+            rotation="00:00",
+            retention="15 days",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            level="INFO",
+            enqueue=True  # 确保日志立即刷新
+        )
+        _loguru_initialized = True
+        loguru_logger.info("loguru 日志处理器已添加")  # 调试日志
 
-    root_logger = logging.getLogger()
-    root_logger.handlers = []
+    # 配置 logging
+    logging.basicConfig(level=logging.INFO)
+    # 手动添加 LoguruHandler 将 logging 的日志重定向到 loguru
+    logging.getLogger().addHandler(loguru_handler())
 
-    handler = TimedRotatingFileHandler(
-        log_file,
-        when='midnight',
-        interval=1,
-        encoding='utf-8',
-        backupCount=7
-    )
+    # 如果传入了 flask_app，重定向 Flask 的日志
+    if flask_app:
+        flask_app.logger.handlers = []  # 清除 Flask 默认的日志处理器
+        flask_app.logger.propagate = False  # 阻止日志传播到 root logger
+        flask_app.logger.addHandler(loguru_handler())  # 添加自定义的 LoguruHandler
+        flask_app.logger.setLevel(logging.INFO)  # 设置日志级别
 
-    # 自定义 namer 函数，生成想要的日志文件名格式
-    def namer(default_name):
-        # 从默认名称中提取日期
-        date_str = default_name.split('.')[-1]
-        # 转换日期格式
-        try:
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-            new_date_str = date_obj.strftime('%Y%m%d')
-            # 返回新的文件名格式
-            return f"service_{new_date_str}.log"
-        except:
-            return default_name
+    return loguru_logger
 
-    handler.namer = namer
 
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
+def loguru_handler():
+    """创建一个将日志转发到 loguru 的处理器"""
+    class LoguruHandler(logging.Handler):
+        def emit(self, record):
+            try:
+                level = loguru_logger.level(record.levelname).name
+            except ValueError:
+                level = record.levelno
 
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(handler)
+            loguru_logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
 
-    flask_app.logger.handlers = []
-    flask_app.logger.propagate = False
-    flask_app.logger.addHandler(handler)
-
-    return root_logger
+    return LoguruHandler()
 
 
 def get_optimal_threads():
@@ -116,10 +122,7 @@ def get_optimal_threads():
 
 
 flask_app = Flask(__name__)
-logger = setup_service_logger()
-# 移除这两行，因为在 setup_service_logger 中已经处理了
-# flask_app.logger.handlers = []  # 清除Flask默认handlers
-# flask_app.logger.addHandler(logger.handlers[0])  # 使用我们的custom handler
+
 # 在 Flask 应用初始化时添加 secret_key
 flask_app.secret_key = os.urandom(24)
 
@@ -264,19 +267,22 @@ class ShareDirectory:
         return dir_obj
 
 
-class RedirectHandler(logging.Handler):
+class RedirectHandler:
+    """自定义sink，将日志消息输出到 ScrolledText 组件"""
     def __init__(self, text_widget):
-        logging.Handler.__init__(self)
         self.text_widget = text_widget
 
-    def emit(self, record):
-        msg = self.format(record)
-
+    def write(self, message):
+        """将日志消息写入 ScrolledText"""
         def append():
-            self.text_widget.insert('end', msg + '\n')
+            self.text_widget.insert('end', message)
             self.text_widget.see('end')
 
         self.text_widget.after(0, append)
+
+    def flush(self):
+        """实现 flush 方法以兼容 loguru"""
+        pass
 
 
 class Config:
@@ -553,17 +559,20 @@ class FileShareService(win32serviceutil.ServiceFramework):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
         self.server = None
-        self.logger = logging.getLogger()
         self.cleanup_thread_running = cleanup_thread_running
 
         # 设置工作目录为可执行文件所在目录
         os.chdir(os.path.dirname(os.path.abspath(sys.executable)))
-
         # 设置环境变量
         os.environ['PYTHONPATH'] = os.path.dirname(os.path.abspath(__file__))
+        # 初始化日志
+        self.logger = setup_service_logger()
 
     def SvcDoRun(self):
         try:
+            # 确保 loguru 初始化
+            self.logger = setup_service_logger()
+            self.logger.info("服务启动，日志系统已初始化")  # 测试日志
             # 等待配置文件就绪
             max_retries = 10
             retry_count = 0
@@ -697,6 +706,9 @@ class FileShareApp:
     def __init__(self, root, style):
         self.root = root
         self.style = style
+
+        # 初始化日志
+        self.logger = setup_service_logger(flask_app)
 
         # 后台服务模式下时钟变量
         self.service_debounce_timer = None
@@ -1097,11 +1109,11 @@ class FileShareApp:
         )
         self.log_area.pack(fill=BOTH, expand=YES, pady=5)
 
-        # 设置日志处理
-        handler = RedirectHandler(self.log_area)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-        flask_app.logger.addHandler(handler)
-        flask_app.logger.setLevel(logging.INFO)
+        # 设置日志处理（确保只添加一次）
+        if not hasattr(self, '_log_handler_added'):  # 检查是否已经添加过处理器
+            handler = RedirectHandler(self.log_area)
+            self.logger.add(handler, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO")
+            self._log_handler_added = True  # 标记为已添加
 
     def switch_server_type_ui(self, is_running):
         if is_running:
@@ -1134,23 +1146,37 @@ class FileShareApp:
             self.server_switch.pack(side=RIGHT, padx=(0, 2))
             self.werkzeug_label.pack(side=RIGHT, padx=(0, 2))
 
-    def setup_file_logging(self):
-        if not os.path.exists('logs'):
-            os.makedirs('logs')
-        log_file = f'logs/fileshare_{datetime.now().strftime("%Y%m%d")}.log'
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-        flask_app.logger.addHandler(file_handler)
-        return file_handler
-
     def toggle_file_logging(self):
+        """切换文件日志记录状态"""
         config.log_to_file = self.log_enabled.get()
         if config.log_to_file:
-            self.file_handler = self.setup_file_logging()
+            # 启用文件日志记录
+            self.setup_file_logging()
         else:
-            if hasattr(self, 'file_handler'):
-                flask_app.logger.removeHandler(self.file_handler)
+            # 禁用文件日志记录
+            self.disable_file_logging()
         config.save()
+
+    def setup_file_logging(self):
+        """设置文件日志记录"""
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
+
+        # 添加文件日志处理器
+        log_file = f'logs/window_{datetime.now().strftime("%Y%m%d")}.log'
+        self.logger.add(
+            log_file,
+            rotation="00:00",  # 每天午夜轮换
+            retention="15 days",  # 保留最近15天的日志
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            level="INFO"
+        )
+
+    def disable_file_logging(self):
+        """禁用文件日志记录"""
+        # 移除所有文件日志处理器
+        self.logger.remove(handler_id=None)  # 移除所有处理器
+        self.logger.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO")  # 重新添加控制台输出
 
     def setup_traces(self):
         # 监听变量变化
@@ -1478,7 +1504,7 @@ class FileShareApp:
                 return
             try:
                 current_date = datetime.now().strftime('%Y%m%d')
-                log_file = os.path.join(get_app_path(), 'logs', 'service.log')
+                log_file = os.path.join(get_app_path(), 'logs', f'service_{current_date}.log')
 
                 if os.path.exists(log_file):
                     if not hasattr(window, 'last_processed_line'):
@@ -1495,7 +1521,7 @@ class FileShareApp:
                         window.last_processed_line = len(logs)
 
             except Exception as e:
-                print(f"同步回显后台服务日志出错: {e}")
+                self.logger.warning(f"同步回显后台服务日志出错: {e}")
 
         check_service_status()
 
@@ -1556,7 +1582,6 @@ class FileShareApp:
             self.log_area.see(END)
             return
 
-        self.save_config()
         port = int(self.port_var.get() or 12345)
         runningPort = port
         ip = get_local_ip()
@@ -1567,6 +1592,7 @@ class FileShareApp:
         if self.service_var.get():
             if not self.back_server_running:
                 try:
+                    self.save_config()
                     self.start_btn.configure(
                         text="正在启动...",
                         style="warning.TButton",
@@ -1596,7 +1622,7 @@ class FileShareApp:
                     tkmessagebox.showerror("错误", f"停止服务失败: {str(e)}")
         else:
             if not self.server_running:
-
+                self.save_config()
                 if self.is_port_in_use(runningPort):
                     if tkmessagebox.askyesno("端口被占用",
                                              f"端口 {runningPort} 已被占用。是否尝试强制释放该端口？"):
