@@ -141,6 +141,9 @@
             <button class="btn btn-primary" onclick="downloadSelected()">
                 <i class="bi bi-download"></i> 打包下载
             </button>
+            <button class="btn btn-primary" onclick="showMoveDialog()">
+                <i class="bi bi-folder-symlink"></i> 移动到
+            </button>
             <button class="btn btn-secondary" onclick="cancelSelection()">
                 <i class="bi bi-x-circle"></i> 取消选择
             </button>
@@ -151,7 +154,8 @@
                 <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
                     <div class="d-flex align-items-center">
                         <input type="checkbox" class="form-check-input me-2 item-checkbox"
-                               data-path="{{ item.path }}" data-name="{{ item.name }}">
+                               data-path="{{ item.path }}" data-name="{{ item.name }}"
+                               data-is-dir="{{ item.is_dir|tojson|safe }}">
                         {% if item.is_dir %}
                             <a href="{{ url_for('list_dir', dirname=item.path) }}" class="item-link">
                                 <i class="bi bi-folder folder-icon me-2"></i>
@@ -213,6 +217,10 @@
                             {% endif %}
                             {% if session.get('admin') %}
                                 <button class="btn btn-sm btn-outline-primary"
+                                        onclick="showMoveDialog(['{{ item.name }}'])" title="移动">
+                                    <i class="bi bi-folder-symlink"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-primary"
                                         onclick="renameItem('{{ item.name }}', {{ 'true' if item.is_dir else 'false' }})"
                                         title="改名">
                                     <i class="bi bi-pencil"></i>
@@ -229,6 +237,30 @@
                     </div>
                 </div>
             {% endfor %}
+        </div>
+    </div>
+
+    <!-- 移动文件模态框 -->
+    <div class="modal fade" id="moveDialog" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">移动文件</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">选择目标目录:</label>
+                        <select class="form-select" id="moveTarget">
+                            <option value="">加载中...</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="moveSelectedItems()">移动</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -735,7 +767,7 @@
                                 listItem.innerHTML = `
     <div class="d-flex align-items-center">
         <input type="checkbox" class="form-check-input me-2 item-checkbox"
-               data-path="${item.path}" data-name="${item.name}">
+               data-path="${item.path}" data-name="${item.name}" data-is-dir="${item.is_dir}">
         <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
            class="item-link"
            ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${item.path}'); return false;"` : ''}>
@@ -757,6 +789,10 @@
                 </button>
             ` : ''}
             ${isAdmin ? `
+                <button class="btn btn-sm btn-outline-primary"
+                        onclick="showMoveDialog('${item.name}')" title="移动">
+                    <i class="bi bi-folder-symlink"></i>
+                </button>
                 <button class="btn btn-sm btn-outline-primary"
                         onclick="renameItem('${item.name}', ${item.is_dir})" title="改名">
                     <i class="bi bi-pencil"></i>
@@ -803,6 +839,108 @@
                 }
             });
         });
+        /* 移动文件逻辑 */
+        // 显示移动对话框
+        function showMoveDialog(singleItem = null) {
+            const selectedItems = singleItem ?
+                [{name: singleItem, path: singleItem}] :
+                Array.from(document.querySelectorAll('.item-checkbox:checked')).map(checkbox => ({
+                    name: checkbox.dataset.name,
+                    path: checkbox.dataset.path,
+                    is_dir: checkbox.dataset.isDir === 'true'
+                }));
+
+            if (selectedItems.length === 0) {
+                alert('请选择要移动的文件');
+                return;
+            }
+
+            // 获取当前路径
+            const currentPath = window.location.pathname;
+
+            // 初始化目标目录选择器
+            initializeTargetDirectories(currentPath);
+
+            // 确保数据格式正确
+            const sanitizedItems = selectedItems.map(item => ({
+                name: typeof item.name === 'string' ? item.name : item.name[0],
+                path: typeof item.path === 'string' ? item.path : item.path[0],
+                is_dir: !!item.is_dir
+            }));
+
+            // 保存选中的项目到dialog中
+            const dialog = document.getElementById('moveDialog');
+            dialog.dataset.selectedItems = JSON.stringify(sanitizedItems);
+
+            // 显示对话框
+            new bootstrap.Modal(dialog).show();
+        }
+
+        // 初始化目标目录选择器
+        function initializeTargetDirectories(currentPath) {
+            const select = document.getElementById('moveTarget');
+            select.innerHTML = '<option value="">加载中...</option>';
+
+            // 获取所有目录结构
+            fetch(`/api/directories/{{ dir_obj.alias }}`)
+                .then(response => response.json())
+                .then(directories => {
+                    select.innerHTML = '';
+                    // 添加根目录选项
+                    select.innerHTML += `<option value="/dir/{{ dir_obj.alias }}">/</option>`;
+
+                    // 添加其他目录选项
+                    directories.forEach(dir => {
+                        if (dir.path !== currentPath) { // 排除当前目录
+                            select.innerHTML += `<option value="${dir.path}">${dir.name}</option>`;
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading directories:', error);
+                    select.innerHTML = '<option value="">加载失败</option>';
+                });
+        }
+
+        // 执行移动操作
+        function moveSelectedItems() {
+            const dialog = document.getElementById('moveDialog');
+            const selectedItems = JSON.parse(dialog.dataset.selectedItems || '[]');
+            const targetPath = document.getElementById('moveTarget').value;
+            const currentPath = window.location.pathname;
+
+            if (!targetPath) {
+                alert('请选择目标目录');
+                return;
+            }
+
+            // 发送移动请求
+            fetch(`/api/move/{{ dir_obj.alias }}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    items: selectedItems,
+                    target_path: targetPath,
+                    current_path: currentPath
+                })
+            })
+                .then(response => {
+                    if (response.ok) {
+                        location.reload();
+                    } else {
+                        return response.text().then(text => {
+                            throw new Error(text);
+                        });
+                    }
+                })
+                .catch(error => {
+                    alert('移动失败: ' + error.message);
+                });
+        }
+
+        /* 移动文件逻辑 end */
     </script>
     <!--通用footer开始-->
 {% endblock %}

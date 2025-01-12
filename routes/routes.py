@@ -780,6 +780,107 @@ def rename_item(alias):
         return str(e), 400
 
 
+# 移动文件所需路由
+@flask_app.route('/api/directories/<path:alias>')
+@check_auth_timestamp
+def get_directories(alias):
+    """移动文件获取目录结构的端点"""
+    if not session.get('admin'):
+        return "Unauthorized", 403
+
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    if not dir_obj:
+        return "Directory not found", 404
+
+    directories = []
+
+    def scan_directories(path, relative_path=''):
+        for item in os.scandir(path):
+            if item.is_dir():
+                dir_path = f"/dir/{alias}/{relative_path}/{item.name}".replace('//', '/')
+                directories.append({
+                    'name': f"/{relative_path}/{item.name}".replace('//', '/'),
+                    'path': dir_path
+                })
+                scan_directories(item.path, f"{relative_path}/{item.name}".replace('//', '/'))
+
+    scan_directories(dir_obj.path)
+    return jsonify(directories)
+
+
+# 移动文件所需路由
+@flask_app.route('/api/move/<path:alias>', methods=['POST'])
+def move_items(alias):
+    if not session.get('admin'):
+        return "Unauthorized", 403
+
+    data = request.json
+    items = data.get('items', [])
+    target_path = data.get('target_path', '')
+    current_path = data.get('current_path', '')
+
+    # 添加调试日志
+    flask_app.logger.debug(f"Received data: {data}")
+    flask_app.logger.debug(f"Items: {items}")
+
+    if not items or not target_path:
+        return "Missing required parameters", 400
+
+    target_path = urllib.parse.unquote(target_path)
+    current_path = urllib.parse.unquote(current_path)
+
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    if not dir_obj:
+        return "Directory not found", 404
+
+    # 修改路径处理方式
+    path_parts = target_path.strip('/').split('/')
+    target_subpath = path_parts[2:] if len(path_parts) > 2 else []
+    target_dir = os.path.join(dir_obj.path, *target_subpath) if target_subpath else dir_obj.path
+
+    if not os.path.exists(target_dir):
+        return "Target directory not found", 404
+
+    try:
+        for item in items:
+            # 获取文件名和路径
+            item_name = item.get('name')
+            item_path = item.get('path')
+
+            # 处理name和path可能是列表的情况
+            if isinstance(item_name, list):
+                item_name = item_name[0]
+            if isinstance(item_path, list):
+                item_path = item_path[0]
+
+            # 构建源路径
+            source_parts = current_path.strip('/').split('/')
+            source_subpath = '/'.join(source_parts[2:]) if len(source_parts) > 2 else ''
+            source_path = os.path.join(dir_obj.path, source_subpath, item_name)
+
+            # 构建目标路径
+            dest_path = os.path.join(target_dir, item_name)
+
+            # 检查目标路径是否存在
+            if os.path.exists(dest_path):
+                return f"File {item_name} already exists in target directory", 409
+
+            # 检查源文件是否存在
+            if not os.path.exists(source_path):
+                return f"Source file {item_name} not found", 404
+
+            # 执行移动操作
+            shutil.move(source_path, dest_path)
+
+        client_info = get_client_info()
+        flask_app.logger.info(f"{client_info} 移动了文件从 {current_path} 到 {target_path}")
+        return "Success", 200
+
+    except Exception as e:
+        flask_app.logger.error(f"Error moving files: {str(e)}")
+        return str(e), 500
+
+
 @flask_app.route('/admin/login', methods=['POST'])
 @check_ip_limit
 def admin_login():
