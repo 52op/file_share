@@ -216,7 +216,6 @@ function cancelSelection() {
 }
 
 
-
 /* -------------------------------------- 分享链接相关逻辑 ------------------------------------ */
 function generateRandomPassword(inputId) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';

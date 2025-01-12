@@ -136,27 +136,57 @@ class ImageViewer {
         this.images = images;
     }
 
-show(imagePath, title = '') {
-    try {
-        // 修正路径格式
-        const normalizedPath = imagePath.replace(/^\/+/, ''); // 移除开头的斜杠
+    show(imagePath, title = '') {
+        try {
+            // 修正路径格式
+            const normalizedPath = imagePath.replace(/^\/+/, ''); // 移除开头的斜杠
 
-        // 找到当前图片在数组中的索引
-        this.currentImageIndex = this.images.findIndex(img => {
-            const imgPath = img.path.replace(/^\/+/, '');
-            return imgPath === normalizedPath;
-        });
+            // 找到当前图片在数组中的索引
+            this.currentImageIndex = this.images.findIndex(img => {
+                const imgPath = img.path.replace(/^\/+/, '');
+                return imgPath === normalizedPath;
+            });
 
-        if (this.currentImageIndex === -1) {
-            console.error('Image not found in the list:', imagePath);
-            return;
+            if (this.currentImageIndex === -1) {
+                console.error('Image not found in the list:', imagePath);
+                return;
+            }
+
+            this.modal.classList.add('active');
+            const currentImage = this.images[this.currentImageIndex];
+
+            // 设置标题
+            this.modal.querySelector('.viewer-title').textContent = currentImage.name;
+
+            // 重置位置和旋转
+            this.rotation = 0;
+            this.position = { x: 0, y: 0 };
+
+            // 设置图片加载完成的回调
+            this.image.onload = () => {
+                // 等图片加载完成后再调用 fitToWindow
+                this.fitToWindow();
+            };
+
+            // 设置图片源
+            this.image.src = `/preview/${currentImage.path}`;
+
+            // 更新计数器和导航按钮
+            this.updateCounter();
+            this.updateNavigationButtons();
+        } catch (error) {
+            console.error('Error showing image:', error);
         }
+    }
 
-        this.modal.classList.add('active');
+    updateImage() {
         const currentImage = this.images[this.currentImageIndex];
+        if (!currentImage) return;
 
-        // 设置标题
+        // 更新标题和计数器
         this.modal.querySelector('.viewer-title').textContent = currentImage.name;
+        this.updateCounter();
+        this.updateNavigationButtons();
 
         // 重置位置和旋转
         this.rotation = 0;
@@ -168,39 +198,9 @@ show(imagePath, title = '') {
             this.fitToWindow();
         };
 
-        // 设置图片源
+        // 设置新图片源
         this.image.src = `/preview/${currentImage.path}`;
-
-        // 更新计数器和导航按钮
-        this.updateCounter();
-        this.updateNavigationButtons();
-    } catch (error) {
-        console.error('Error showing image:', error);
     }
-}
-
-updateImage() {
-    const currentImage = this.images[this.currentImageIndex];
-    if (!currentImage) return;
-
-    // 更新标题和计数器
-    this.modal.querySelector('.viewer-title').textContent = currentImage.name;
-    this.updateCounter();
-    this.updateNavigationButtons();
-
-    // 重置位置和旋转
-    this.rotation = 0;
-    this.position = { x: 0, y: 0 };
-
-    // 设置图片加载完成的回调
-    this.image.onload = () => {
-        // 等图片加载完成后再调用 fitToWindow
-        this.fitToWindow();
-    };
-
-    // 设置新图片源
-    this.image.src = `/preview/${currentImage.path}`;
-}
 
     updateCounter() {
         this.imageCounter.textContent = `${this.currentImageIndex + 1} / ${this.images.length}`;
