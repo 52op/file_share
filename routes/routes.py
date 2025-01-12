@@ -842,6 +842,7 @@ def move_items(alias):
         return "Target directory not found", 404
 
     try:
+        client_info = get_client_info()
         for item in items:
             # 获取文件名和路径
             item_name = item.get('name')
@@ -871,13 +872,12 @@ def move_items(alias):
 
             # 执行移动操作
             shutil.move(source_path, dest_path)
+            flask_app.logger.info(f"{client_info} 移动了{item_name} 从 {current_path} 到 {target_path}")
 
-        client_info = get_client_info()
-        flask_app.logger.info(f"{client_info} 移动了文件从 {current_path} 到 {target_path}")
         return "Success", 200
 
     except Exception as e:
-        flask_app.logger.error(f"Error moving files: {str(e)}")
+        flask_app.logger.error(f"移动文件错误: {str(e)}")
         return str(e), 500
 
 

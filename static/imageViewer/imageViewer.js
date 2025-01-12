@@ -3,6 +3,8 @@ class ImageViewer {
         this.scale = 1;
         this.rotation = 0;
         this.position = { x: 0, y: 0 };
+        this.currentImageIndex = 0;
+        this.images = [];  // 存储当前目录下的所有图片
         this.initModal();
         this.bindEvents();
     }
@@ -19,7 +21,9 @@ class ImageViewer {
                 </div>
             </div>
             <div class="viewer-container">
+                <button class="nav-btn prev-btn"><i class="bi bi-chevron-left"></i></button>
                 <img class="viewer-image" draggable="false">
+                <button class="nav-btn next-btn"><i class="bi bi-chevron-right"></i></button>
             </div>
             <div class="viewer-toolbar">
                 <button class="btn-rotate-left" title="向左旋转"><i class="bi bi-arrow-counterclockwise"></i></button>
@@ -37,6 +41,7 @@ class ImageViewer {
                 <button class="btn-zoom-in" title="放大"><i class="bi bi-zoom-in"></i></button>
                 <button class="btn-reset" title="重置"><i class="bi bi-arrow-repeat"></i></button>
                 <button class="btn-save" title="保存"><i class="bi bi-download"></i></button>
+                <span class="image-counter"></span>
             </div>
         `;
 
@@ -44,6 +49,7 @@ class ImageViewer {
         this.modal = modal;
         this.image = modal.querySelector('.viewer-image');
         this.container = modal.querySelector('.viewer-container');
+        this.imageCounter = modal.querySelector('.image-counter');
     }
 
     bindEvents() {
@@ -106,12 +112,18 @@ class ImageViewer {
             }
         };
 
+        // 上一张下一张导航按钮事件
+        this.modal.querySelector('.prev-btn').onclick = () => this.showPrevious();
+        this.modal.querySelector('.next-btn').onclick = () => this.showNext();
+
         // 键盘快捷键
         document.addEventListener('keydown', (e) => {
             if (!this.modal.classList.contains('active')) return;
 
             switch(e.key) {
                 case 'Escape': this.close(); break;
+                case 'ArrowLeft': this.showPrevious(); break;
+                case 'ArrowRight': this.showNext(); break;
                 case '+': if (e.ctrlKey) { e.preventDefault(); this.zoom(1.1); } break;
                 case '-': if (e.ctrlKey) { e.preventDefault(); this.zoom(0.9); } break;
                 case '0': if (e.ctrlKey) { e.preventDefault(); this.reset(); } break;
@@ -119,7 +131,104 @@ class ImageViewer {
         });
     }
 
-    show(imagePath, title = '') {
+    // 设置当前目录下的所有图片
+    setImages(images) {
+        this.images = images;
+    }
+
+show(imagePath, title = '') {
+    try {
+        // 修正路径格式
+        const normalizedPath = imagePath.replace(/^\/+/, ''); // 移除开头的斜杠
+
+        // 找到当前图片在数组中的索引
+        this.currentImageIndex = this.images.findIndex(img => {
+            const imgPath = img.path.replace(/^\/+/, '');
+            return imgPath === normalizedPath;
+        });
+
+        if (this.currentImageIndex === -1) {
+            console.error('Image not found in the list:', imagePath);
+            return;
+        }
+
+        this.modal.classList.add('active');
+        const currentImage = this.images[this.currentImageIndex];
+
+        // 设置标题
+        this.modal.querySelector('.viewer-title').textContent = currentImage.name;
+
+        // 重置位置和旋转
+        this.rotation = 0;
+        this.position = { x: 0, y: 0 };
+
+        // 设置图片加载完成的回调
+        this.image.onload = () => {
+            // 等图片加载完成后再调用 fitToWindow
+            this.fitToWindow();
+        };
+
+        // 设置图片源
+        this.image.src = `/preview/${currentImage.path}`;
+
+        // 更新计数器和导航按钮
+        this.updateCounter();
+        this.updateNavigationButtons();
+    } catch (error) {
+        console.error('Error showing image:', error);
+    }
+}
+
+updateImage() {
+    const currentImage = this.images[this.currentImageIndex];
+    if (!currentImage) return;
+
+    // 更新标题和计数器
+    this.modal.querySelector('.viewer-title').textContent = currentImage.name;
+    this.updateCounter();
+    this.updateNavigationButtons();
+
+    // 重置位置和旋转
+    this.rotation = 0;
+    this.position = { x: 0, y: 0 };
+
+    // 设置图片加载完成的回调
+    this.image.onload = () => {
+        // 等图片加载完成后再调用 fitToWindow
+        this.fitToWindow();
+    };
+
+    // 设置新图片源
+    this.image.src = `/preview/${currentImage.path}`;
+}
+
+    updateCounter() {
+        this.imageCounter.textContent = `${this.currentImageIndex + 1} / ${this.images.length}`;
+    }
+
+    updateNavigationButtons() {
+        const prevBtn = this.modal.querySelector('.prev-btn');
+        const nextBtn = this.modal.querySelector('.next-btn');
+
+        prevBtn.style.visibility = this.currentImageIndex > 0 ? 'visible' : 'hidden';
+        nextBtn.style.visibility = this.currentImageIndex < this.images.length - 1 ? 'visible' : 'hidden';
+    }
+
+    showPrevious() {
+        if (this.currentImageIndex > 0) {
+            this.currentImageIndex--;
+            this.updateImage();
+        }
+    }
+
+    showNext() {
+        if (this.currentImageIndex < this.images.length - 1) {
+            this.currentImageIndex++;
+            this.updateImage();
+        }
+    }
+
+    show_one(imagePath, title = '') {
         this.modal.classList.add('active');
         this.modal.querySelector('.viewer-title').textContent = title;
         // 先重置状态

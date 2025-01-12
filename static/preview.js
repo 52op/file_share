@@ -68,18 +68,42 @@ const previewHandlers = {
     image: {
         match: ext => ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext),
         handle: async (filepath, filename) => {
-            // 动态加载所需资源
             await Promise.all([
                 ResourceLoader.loadCSS('/static/imageViewer/imageViewer.css'),
                 ResourceLoader.loadJS('/static/imageViewer/imageViewer.js')
             ]);
 
-            // 确保全局实例只创建一次
             if (!window.imageViewer) {
                 window.imageViewer = new ImageViewer();
             }
 
-            window.imageViewer.show(`/preview/${filepath}`, filename);
+            // 获取当前目录下所有图片
+            const currentDirItems = Array.from(document.querySelectorAll('.list-group-item'));
+            const images = currentDirItems
+                .map(item => {
+                    const link = item.querySelector('.item-link');
+                    if (!link) return null;
+
+                    const name = link.textContent.trim();
+                    const ext = name.split('.').pop().toLowerCase();
+                    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
+                        const onclick = link.getAttribute('onclick');
+                        if (onclick) {
+                            const match = onclick.match(/handleDownload\('([^']+)',\s*'([^']+)'\)/);
+                            if (match) {
+                                return {
+                                    name: name,
+                                    path: `${match[1]}/${match[2]}`
+                                };
+                            }
+                        }
+                    }
+                    return null;
+                })
+                .filter(img => img !== null);
+
+            window.imageViewer.setImages(images);
+            window.imageViewer.show(filepath, filename);
             return true;
         }
     },
@@ -145,8 +169,12 @@ async function fileCheck(filename, filepath) {
     // 查找匹配的处理器
     const handler = Object.values(previewHandlers).find(h => h.match(ext));
     if (handler) {
-        const previewContent = document.getElementById('preview-content');
-        previewContent.innerHTML = handler.handle(filepath);
+        // 移除这行，因为handler.handle现在会直接处理预览内容
+        //const previewContent = document.getElementById('preview-content');
+        //previewContent.innerHTML = handler.handle(filepath);
+
+        // 直接调用处理器的handle方法
+        await handler.handle(filepath, filename);
         return true;
     }
 

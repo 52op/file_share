@@ -42,6 +42,7 @@
 }
 
 .viewer-container {
+    position: relative;
     flex: 1;
     display: flex;
     align-items: center;
@@ -89,4 +90,36 @@
 
 .zoom-select option {
     background: #333;
+}
+
+.nav-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0, 0, 0, 0.5);
+    border: none;
+    color: white;
+    padding: 20px 15px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.3s;
+}
+
+.nav-btn:hover {
+    opacity: 1;
+}
+
+.prev-btn {
+    left: 0;
+    border-radius: 0 5px 5px 0;
+}
+
+.next-btn {
+    right: 0;
+    border-radius: 5px 0 0 5px;
+}
+
+.image-counter {
+    color: white;
+    margin-left: 10px;
 }
