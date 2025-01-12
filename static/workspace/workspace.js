@@ -5,6 +5,7 @@ class WorkspaceManager {
         this.activeTab = null;
         this.isMinimized = false;
         this.savedState = null;
+        this.hasUnsavedChanges = new Map(); // 跟踪未保存的更改
         this.init();
     }
 
@@ -20,10 +21,23 @@ class WorkspaceManager {
                     <button class="close-btn"><i class="bi bi-x-lg"></i></button>
                 </div>
             </div>
-            <div class="workspace-body"></div>
+            <div class="workspace-body">
+                <button class="save-button" style="display: none;">
+                    <i class="bi bi-save"></i> 保存
+                </button>
+            </div>
             <div class="workspace-statusbar">
-                <span class="status-text"></span>
-                <span class="file-info"></span>
+                <div class="statusbar-main">
+                    <span class="status-text"></span>
+                    <span class="file-info"></span>
+                </div>
+                <div class="shortcuts-info">
+                    <span class="shortcut-item"><span class="key">Ctrl</span>+<span class="key">S</span> 保存</span>
+                    <span class="shortcut-item"><span class="key">Ctrl</span>+<span class="key">F</span> 查找</span>
+                    <span class="shortcut-item"><span class="key">Ctrl</span>+<span class="key">H</span> 替换</span>
+                    <span class="shortcut-item"><span class="key">Ctrl</span>+<span class="key">Z</span> 撤销</span>
+                    <span class="shortcut-item"><span class="key">Ctrl</span>+<span class="key">Y</span> 重做</span>
+                </div>
             </div>
         `;
 
@@ -228,6 +242,17 @@ class WorkspaceManager {
     }
 
     close() {
+        // 检查是否有任何文件未保存
+        if (this.hasUnsavedChanges.size > 0) {
+            const unsavedFiles = Array.from(this.hasUnsavedChanges.keys())
+                .map(id => this.tabs.get(id)?.filename)
+                .filter(Boolean)
+                .join(', ');
+
+            if (!confirm(`以下文件尚未保存: \n${unsavedFiles}\n确定要关闭工作区吗？`)) {
+                return;
+            }
+        }
         // 先隐藏窗口
         this.workspace.style.display = 'none';
 
@@ -244,6 +269,9 @@ class WorkspaceManager {
         // 清空标签集合
         this.tabs.clear();
         this.activeTab = null;
+
+        // 清空未保存更改记录
+        this.hasUnsavedChanges.clear();
 
         // 重置工作区状态
         this.isMinimized = false;
@@ -300,11 +328,67 @@ class WorkspaceManager {
             enableLiveAutocompletion: true
         });
 
+        // 添加更改监听
+        editor.session.on('change', () => {
+            if (!this.hasUnsavedChanges.get(id)) {
+                this.hasUnsavedChanges.set(id, true);
+                this.updateSaveButton(id);
+                this.updateTabTitle(id);
+            }
+        });
+
+        // 添加保存按钮
+        const saveButton = this.workspace.querySelector('.save-button');
+        saveButton.onclick = () => this.saveFile(tab);
+
         tab.editor = editor;
         this.tabs.set(id, tab);
 
         this.activateTab(id);
         this.workspace.style.display = 'flex';
+    }
+
+    updateSaveButton(id) {
+        const tab = this.tabs.get(id);
+        const saveButton = this.workspace.querySelector('.save-button');
+
+        if (tab && tab.canEdit && this.hasUnsavedChanges.get(id)) {
+            saveButton.style.display = 'block';
+        } else {
+            saveButton.style.display = 'none';
+        }
+    }
+
+    updateTabTitle(id) {
+        const tabElement = this.workspace.querySelector(`.tab[data-id="${id}"]`);
+        const titleElement = tabElement?.querySelector('.tab-title');
+        if (titleElement) {
+            const tab = this.tabs.get(id);
+            titleElement.textContent = `${tab.filename}${this.hasUnsavedChanges.get(id) ? ' *' : ''}`;
+        }
+    }
+
+    async saveFile(tab) {
+        try {
+            const content = tab.editor.getValue();
+            const response = await fetch(`/api/save-file/${tab.filepath}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({content})
+            });
+
+            if (response.ok) {
+                //this.hasUnsavedChanges.set(tab.id, false);
+                this.hasUnsavedChanges.delete(tab.id)
+                this.updateSaveButton(tab.id);
+                this.updateTabTitle(tab.id);
+                this.setStatus('文件已保存', 'success');
+            } else {
+                throw new Error('保存失败');
+            }
+        } catch (err) {
+            this.setStatus('保存失败: ' + err.message, 'error');
+        }
     }
 
     activateTab(id) {
@@ -332,6 +416,7 @@ class WorkspaceManager {
         tab.editor.focus();
         tab.editor.resize();
 
+        this.updateSaveButton(id);
         this.activeTab = id;
         this.updateStatusBar(tab);
     }
@@ -339,6 +424,13 @@ class WorkspaceManager {
     closeTab(id) {
         const tab = this.tabs.get(id);
         if (!tab) return;
+
+        // 添加未保存更改检查
+        if (this.hasUnsavedChanges.get(id)) {
+            if (!confirm('文件有未保存的更改，确定要关闭吗？')) {
+                return;
+            }
+        }
 
         // 安全地移除 DOM 元素
         const tabElement = this.workspace.querySelector(`.tab[data-id="${id}"]`);
@@ -363,9 +455,11 @@ class WorkspaceManager {
                 this.minimize();
             }
         }
+
+        this.hasUnsavedChanges.delete(id);
     }
 
-    async saveFile(tab) {
+    async saveFile_(tab) {
         try {
             const content = tab.editor.getValue();
             const response = await fetch(`/api/save-file/${tab.filepath}`, {

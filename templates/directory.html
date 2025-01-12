@@ -141,9 +141,11 @@
             <button class="btn btn-primary" onclick="downloadSelected()">
                 <i class="bi bi-download"></i> 打包下载
             </button>
+            {% if session.get('admin') %}
             <button class="btn btn-primary" onclick="showMoveDialog()">
                 <i class="bi bi-folder-symlink"></i> 移动到
             </button>
+            {% endif %}
             <button class="btn btn-secondary" onclick="cancelSelection()">
                 <i class="bi bi-x-circle"></i> 取消选择
             </button>
@@ -842,6 +844,10 @@
         /* 移动文件逻辑 */
         // 显示移动对话框
         function showMoveDialog(singleItem = null) {
+            if (!isAdmin) {
+                alert('需要管理员权限');
+                return;
+            }
             const selectedItems = singleItem ?
                 [{name: singleItem, path: singleItem}] :
                 Array.from(document.querySelectorAll('.item-checkbox:checked')).map(checkbox => ({

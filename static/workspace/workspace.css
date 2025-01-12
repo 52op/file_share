@@ -93,12 +93,38 @@
 
 .workspace-statusbar {
     display: flex;
-    justify-content: space-between;
-    padding: 4px 8px;
+    flex-direction: column;
     background: #2d2d2d;
     border-top: 1px solid #333;
     color: #ccc;
     font-size: 12px;
+}
+
+.statusbar-main {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 8px;
+    border-bottom: 1px solid #333;
+}
+
+.shortcuts-info {
+    padding: 4px 8px;
+    display: flex;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+.shortcut-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.key {
+    background: #444;
+    padding: 2px 5px;
+    border-radius: 3px;
+    border: 1px solid #555;
 }
 
 .status-text {
@@ -156,3 +182,24 @@
 .resize-handle:hover {
     background: rgba(0, 120, 215, 0.4);
 }
+
+/* 添加保存按钮样式 */
+.save-button {
+    position: absolute;
+    top: 80px;
+    right: 19px;
+    padding: 3px 9px;
+    background: #28bdcd;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    display: none;
+    z-index: 1002;
+    opacity: 0.8;
+}
+
+.save-button:hover {
+    opacity: 1;
+}
+
