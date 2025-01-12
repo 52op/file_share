@@ -80,7 +80,8 @@ def setup_service_logger(flask_app=None):
             level="INFO",
             enqueue=True,
             backtrace=True,  # 添加异常追踪
-            diagnose=True  # 添加诊断信息
+            diagnose=True,  # 添加诊断信息
+            filter=lambda record: 'Task queue depth' not in record["message"]  # 添加过滤器
         )
 
         _loguru_initialized = True
@@ -88,6 +89,8 @@ def setup_service_logger(flask_app=None):
 
     # 配置 logging
     logging.basicConfig(level=logging.INFO)
+    # 过滤waitress的警告日志
+    logging.getLogger('waitress').setLevel(logging.ERROR)
     # 手动添加 LoguruHandler 将 logging 的日志重定向到 loguru
     logging.getLogger().addHandler(loguru_handler())
 
