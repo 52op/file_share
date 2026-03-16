@@ -24,13 +24,39 @@ from werkzeug.utils import secure_filename
 from waitress.server import create_server  # 生产环境使用
 
 from main import flask_app, config, format_file_size, partial_download, send_file_generator, \
-    get_client_info, secure_filename_cn, ShareDirectory, password_change_timestamps
+    get_client_info, secure_filename_cn, ShareDirectory, password_change_timestamps, get_app_path
 from share_links import ShareManager   # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
 from firewall import IPLimiter
+
+
+def safe_join_path(base_path, *paths):
+    """安全路径拼接，防止路径遍历攻击"""
+    try:
+        # 规范化基础路径
+        base_path = os.path.abspath(base_path)
+
+        # 拼接路径
+        joined_path = os.path.join(base_path, *paths)
+
+        # 规范化拼接后的路径
+        normalized_path = os.path.abspath(joined_path)
+
+        # 检查是否在基础路径内
+        if not normalized_path.startswith(base_path + os.sep) and normalized_path != base_path:
+            raise ValueError("Path traversal detected")
+
+        return normalized_path
+    except (ValueError, OSError) as e:
+        flask_app.logger.warning(f"路径安全检查失败: {e}")
+        raise ValueError("Invalid path")
 
 # 实例化 share_links/share_manager.py 里面的 ShareManager
 share_manager = ShareManager()    # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
 ip_limiter = IPLimiter()
+
+# 清理线程相关变量
+cleanup_thread_running = False
+cleanup_thread = None
 
 
 def check_ip_limit(f):
@@ -46,6 +72,43 @@ def check_ip_limit(f):
                                    pageMark='访问受限')
 
         return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def check_directory_admin_permission(f):
+    """检查目录管理员权限的装饰器"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 如果是超级管理员，直接通过
+        if session.get('admin'):
+            return f(*args, **kwargs)
+
+        # 获取目录别名
+        dirname = None
+        if 'alias' in kwargs:
+            dirname = kwargs['alias']
+        elif 'dirname' in kwargs:
+            dirname = kwargs['dirname'].split('/')[0]
+        elif 'filepath' in kwargs:
+            dirname = kwargs['filepath'].split('/')[0]
+        elif request.method == 'POST':
+            if request.json:
+                if 'path' in request.json:
+                    dirname = request.json['path'].split('/')[0]
+            elif request.form:
+                current_path = request.form.get('current_path', '')
+                if current_path:
+                    dirname = current_path.strip('/').split('/')[1] if current_path.startswith('/dir/') else current_path.split('/')[0]
+
+        if not dirname:
+            return 'Unauthorized - No directory specified', 403
+
+        # 检查是否是该目录的管理员
+        if session.get(f'dir_admin_{dirname}'):
+            return f(*args, **kwargs)
+
+        return 'Unauthorized - Directory admin access required', 403
 
     return decorated_function
 
@@ -160,6 +223,12 @@ def stop_cleanup_thread():
     flask_app.logger.info("清理线程已停止")
 
 
+# 检查清理线程是否运行
+def is_cleanup_running():
+    global cleanup_thread_running
+    return cleanup_thread_running
+
+
 # 遍历static下指定目录的所有主题
 def get_themes():
     themes = []
@@ -181,7 +250,11 @@ def validate_file_path(filepath):
     if not dir_obj:
         return '目录不存在', 404
 
-    full_path = os.path.join(dir_obj.path, *filepath.split('/')[1:])
+    # 安全路径拼接，防止路径遍历
+    try:
+        full_path = safe_join_path(dir_obj.path, *filepath.split('/')[1:])
+    except ValueError:
+        return '非法的文件路径', 400
 
     if not os.path.exists(full_path):
         return '文件不存在', 404
@@ -214,10 +287,15 @@ def read_text_file(filepath):
     raise Exception('无法以支持的编码格式读取文件')
 
 
-# 使用 Flask 的 context_processor 或 before_request 钩子来全局传递 themes 变量
+# 使用 Flask 的 context_processor 或 before_request 钩子来全局传递 themes 变量和页面设置
 @flask_app.context_processor
-def inject_themes():
-    return {'themes': get_themes()}
+def inject_global_vars():
+    return {
+        'themes': get_themes(),
+        'page_title': config.page_title,
+        'logo_name': config.logo_name,
+        'logo_image_url': config.logo_image_url
+    }
 
 
 # 在主应用入口处添加全局拦截
@@ -291,25 +369,10 @@ def check_password(alias):
 @flask_app.route('/dir/<path:dirname>')
 @check_auth_timestamp
 def list_dir(dirname):
-    dir_obj = None
     base_dir = dirname.split('/')[0]
-    # 添加详细日志
-    # flask_app.logger.info(f"访问目录: {dirname}")
-    # flask_app.logger.info(f"Session状态: {session}")
-    for d in config.shared_dirs.values():
-        if d.alias == base_dir:
-            dir_obj = d
-            break
-    for d in config.shared_dirs.values():
-        if d.alias == base_dir:
-            dir_obj = d
-            break
 
-    # 添加详细打印
-    # flask_app.logger.info(f"目录对象详情:")
-    # flask_app.logger.info(f"类型: {type(dir_obj)}")
-    # flask_app.logger.info(f"属性: {vars(dir_obj)}")
-    # flask_app.logger.info(f"密码值: {dir_obj.password}")
+    # 查找目录对象（修复重复循环问题）
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
 
     if not dir_obj:
         return render_template('error.html',
@@ -319,8 +382,14 @@ def list_dir(dirname):
     if dir_obj.password and not session.get(f'auth_{base_dir}'):
         return render_template('directory_password.html', alias=base_dir, pageMark=f'{base_dir}访问密码')
 
+    # 安全路径拼接，防止路径遍历
     sub_path = dirname.split('/')[1:]
-    current_path = os.path.join(dir_obj.path, *sub_path)
+    try:
+        current_path = safe_join_path(dir_obj.path, *sub_path)
+    except ValueError:
+        return render_template('error.html',
+                               error_code=400,
+                               message="非法的路径访问", pageMark=f'非法的路径访问'), 400
 
     if not os.path.exists(current_path):
         return render_template('error.html',
@@ -370,14 +439,15 @@ def list_dir(dirname):
 @flask_app.route('/api/search/<alias>')
 @check_auth_timestamp
 def search_files(alias):
+    import time
+
     search_term = request.args.get('term', '').lower()
+    max_results = int(request.args.get('limit', 100))  # 默认最多返回100个结果
+    max_depth = int(request.args.get('depth', 5))  # 默认最大搜索深度5层
+    timeout = int(request.args.get('timeout', 10))  # 默认超时10秒
 
     # 从config获取目录对象
-    dir_obj = None
-    for d in config.shared_dirs.values():
-        if d.alias == alias:
-            dir_obj = d
-            break
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
 
     if not dir_obj:
         return jsonify({'error': 'Directory not found'}), 404
@@ -386,31 +456,75 @@ def search_files(alias):
     if dir_obj.password and not session.get(f'auth_{alias}'):
         return jsonify({'error': 'Authentication required'}), 403
 
+    if not search_term:
+        return jsonify({'results': [], 'total': 0, 'limited': False, 'timeout': False})
+
     results = []
-    # 使用和list_dir相同的遍历逻辑
-    for root, dirs, files in os.walk(dir_obj.path):
-        for dir_name in dirs:
-            if search_term in dir_name.lower():
-                rel_path = os.path.relpath(os.path.join(root, dir_name), dir_obj.path)
-                full_path = os.path.join(alias, rel_path).replace('\\', '/')
-                results.append({
-                    'name': dir_name,
-                    'is_dir': True,
-                    'path': full_path
-                })
+    start_time = time.time()
 
-        for file_name in files:
-            if search_term in file_name.lower():
-                rel_path = os.path.relpath(os.path.join(root, file_name), dir_obj.path)
-                full_path = os.path.join(alias, rel_path).replace('\\', '/')
-                results.append({
-                    'name': file_name,
-                    'is_dir': False,
-                    'size': format_file_size(os.path.getsize(os.path.join(root, file_name))),
-                    'path': full_path
-                })
+    try:
+        # 使用受限的遍历逻辑
+        for root, dirs, files in os.walk(dir_obj.path):
+            # 检查超时
+            if time.time() - start_time > timeout:
+                flask_app.logger.warning(f"搜索超时: {alias}, 搜索词: {search_term}")
+                break
 
-    return jsonify(results)
+            # 检查结果数量限制
+            if len(results) >= max_results:
+                break
+
+            # 检查深度限制
+            current_depth = root[len(dir_obj.path):].count(os.sep)
+            if current_depth > max_depth:
+                dirs[:] = []  # 不再深入子目录
+                continue
+
+            # 搜索目录
+            for dir_name in dirs:
+                if len(results) >= max_results:
+                    break
+                if search_term in dir_name.lower():
+                    try:
+                        rel_path = os.path.relpath(os.path.join(root, dir_name), dir_obj.path)
+                        full_path = os.path.join(alias, rel_path).replace('\\', '/')
+                        results.append({
+                            'name': dir_name,
+                            'is_dir': True,
+                            'path': full_path
+                        })
+                    except (OSError, ValueError):
+                        continue
+
+            # 搜索文件
+            for file_name in files:
+                if len(results) >= max_results:
+                    break
+                if search_term in file_name.lower():
+                    try:
+                        file_path = os.path.join(root, file_name)
+                        rel_path = os.path.relpath(file_path, dir_obj.path)
+                        full_path = os.path.join(alias, rel_path).replace('\\', '/')
+                        file_size = os.path.getsize(file_path)
+                        results.append({
+                            'name': file_name,
+                            'is_dir': False,
+                            'size': format_file_size(file_size),
+                            'path': full_path
+                        })
+                    except (OSError, ValueError):
+                        continue
+
+    except Exception as e:
+        flask_app.logger.error(f"搜索过程中发生错误: {e}")
+        return jsonify({'error': 'Search failed'}), 500
+
+    return jsonify({
+        'results': results,
+        'total': len(results),
+        'limited': len(results) >= max_results,
+        'timeout': time.time() - start_time > timeout
+    })
 
 
 @flask_app.route('/preview/<path:filepath>')
@@ -556,7 +670,15 @@ def download(filepath):
         flask_app.logger.error(f"Directory not found: {dirname}")
         return "Directory not found", 404
 
-    file_path = os.path.join(dir_obj.path, filename)
+    # 检查目录访问权限
+    if dir_obj.password and not session.get(f'auth_{dirname}'):
+        return render_template('directory_password.html', alias=dirname, pageMark=f'{dirname}访问密码')
+
+    # 安全路径拼接，防止路径遍历
+    try:
+        file_path = safe_join_path(dir_obj.path, filename)
+    except ValueError:
+        return "Invalid file path", 400
 
     if not os.path.isfile(file_path):
         flask_app.logger.error(f"File not found: {file_path}")
@@ -581,9 +703,9 @@ def download(filepath):
 
 
 @flask_app.route('/api/upload/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
 def upload_file(alias):
-    if not session.get('admin'):
-        return "Unauthorized", 403
+    # 权限检查已由装饰器处理
 
     file = request.files.get('file')
     current_path = request.form.get('current_path', '')
@@ -657,10 +779,40 @@ def upload_file(alias):
     })
 
 
+def validate_folder_name(name):
+    """验证文件夹名称，特别注意#号等URL敏感字符"""
+    if not name.strip():
+        return "文件夹名称不能为空"
+
+    # 包含#号等URL敏感字符的完整检查
+    invalid_chars = r'[<>:"|?*\\/#%&{}$!\'@+`=]'
+    if re.search(invalid_chars, name):
+        return "文件夹名称不能包含以下字符: < > : \" | ? * \\ / # % & { } $ ! ' @ + ` ="
+
+    # 检查保留名称
+    reserved_names = ['CON', 'PRN', 'AUX', 'NUL'] + [f'COM{i}' for i in range(1,10)] + [f'LPT{i}' for i in range(1,10)]
+    if name.upper() in reserved_names:
+        return "不能使用系统保留名称"
+
+    # 检查长度
+    if len(name) > 255:
+        return "文件夹名称过长（最多255个字符）"
+
+    # 检查是否以点开头
+    if name.startswith('.'):
+        return "文件夹名称不能以点开头"
+
+    # 检查是否以点或空格结尾
+    if name.endswith('.') or name.endswith(' '):
+        return "文件夹名称不能以点或空格结尾"
+
+    return None
+
+
 @flask_app.route('/api/mkdir/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
 def make_directory(alias):
-    if not session.get('admin'):
-        return "Unauthorized", 403
+    # 权限检查已由装饰器处理
 
     current_path = request.form.get('current_path')
     folder_name = request.form.get('name')
@@ -670,6 +822,11 @@ def make_directory(alias):
 
     current_path = urllib.parse.unquote(current_path)
     folder_name = urllib.parse.unquote(folder_name)
+
+    # 验证文件夹名称
+    validation_error = validate_folder_name(folder_name)
+    if validation_error:
+        return validation_error, 400
 
     dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
     if not dir_obj:
@@ -696,9 +853,9 @@ def make_directory(alias):
 
 
 @flask_app.route('/api/delete/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
 def delete_item(alias):
-    if not session.get('admin'):
-        return "Unauthorized", 403
+    # 权限检查已由装饰器处理
 
     name = request.form.get('name')
     current_path = request.form.get('current_path')
@@ -742,9 +899,9 @@ def delete_item(alias):
 
 
 @flask_app.route('/api/rename/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
 def rename_item(alias):
-    if not session.get('admin'):
-        return "Unauthorized", 403
+    # 权限检查已由装饰器处理
 
     old_name = request.form.get('old_name')
     new_name = request.form.get('new_name')
@@ -755,6 +912,12 @@ def rename_item(alias):
     current_path = urllib.parse.unquote(current_path)
     old_name = urllib.parse.unquote(old_name)
     new_name = urllib.parse.unquote(new_name)
+
+    # 如果是重命名文件夹，验证新名称
+    if is_dir:
+        validation_error = validate_folder_name(new_name)
+        if validation_error:
+            return validation_error, 400
 
     dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
     if not dir_obj:
@@ -783,10 +946,10 @@ def rename_item(alias):
 # 移动文件所需路由
 @flask_app.route('/api/directories/<path:alias>')
 @check_auth_timestamp
+@check_directory_admin_permission
 def get_directories(alias):
     """移动文件获取目录结构的端点"""
-    if not session.get('admin'):
-        return "Unauthorized", 403
+    # 权限检查已由装饰器处理
 
     dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
     if not dir_obj:
@@ -810,9 +973,9 @@ def get_directories(alias):
 
 # 移动文件所需路由
 @flask_app.route('/api/move/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
 def move_items(alias):
-    if not session.get('admin'):
-        return "Unauthorized", 403
+    # 权限检查已由装饰器处理
 
     data = request.json
     items = data.get('items', [])
@@ -905,6 +1068,49 @@ def admin_logout():
     return redirect(url_for('index'))
 
 
+@flask_app.route('/dir-admin/login', methods=['POST'])
+@check_ip_limit
+def dir_admin_login():
+    """目录管理员登录"""
+    client_info = f"{request.remote_addr}"
+    password = request.form.get('password')
+    dirname = request.form.get('dirname')
+
+    if not dirname or not password:
+        return 'Missing parameters', 400
+
+    # 查找对应的目录配置
+    dir_obj = None
+    for d in config.shared_dirs.values():
+        if d.alias == dirname:
+            dir_obj = d
+            break
+
+    if not dir_obj:
+        return 'Directory not found', 404
+
+    # 检查密码
+    if dir_obj.admin_password and (password == dir_obj.admin_password or password == config.admin_password):
+        session[f'dir_admin_{dirname}'] = True
+        ip_limiter.reset(client_info)  # 登录成功后重置计数
+        flask_app.logger.info(f"{client_info} 目录管理员登录成功: {dirname}")
+        return redirect(request.referrer or url_for('list_dir', dirname=dirname))
+
+    # 记录失败次数
+    ip_limiter.add_failed_attempt(client_info)
+    flask_app.logger.warning(f"{client_info} 目录管理员登录失败: {dirname}")
+    return 'Invalid password', 401
+
+
+@flask_app.route('/dir-admin/logout/<dirname>')
+def dir_admin_logout(dirname):
+    """目录管理员退出登录"""
+    client_info = f"{request.remote_addr}"
+    session.pop(f'dir_admin_{dirname}', None)
+    flask_app.logger.info(f"{client_info} 目录管理员退出登录: {dirname}")
+    return redirect(url_for('list_dir', dirname=dirname))
+
+
 @flask_app.route('/api/directory', methods=['POST'])
 def add_directory_api():
     if not session.get('admin'):
@@ -929,8 +1135,9 @@ def add_directory_api():
     dir_obj = ShareDirectory(
         path,
         secure_alias,
-        data['password'],
-        data['desc']
+        data.get('password', ''),
+        data.get('desc', ''),
+        data.get('admin_password', '')  # 新增：处理目录管理密码
     )
 
     config.shared_dirs[dir_obj.name] = dir_obj
@@ -939,12 +1146,139 @@ def add_directory_api():
     return 'Success', 200
 
 
-@flask_app.route('/api/directory/<alias>', methods=['PUT', 'DELETE'])
+@flask_app.route('/static/logos/<filename>')
+def serve_logo(filename):
+    """专门处理logos目录的静态文件访问"""
+    try:
+        # 使用程序运行目录的logos文件夹
+        logos_dir = os.path.join(get_app_path(), 'static', 'logos')
+        file_path = os.path.join(logos_dir, filename)
+
+        # 安全检查，防止路径遍历攻击
+        if not os.path.abspath(file_path).startswith(os.path.abspath(logos_dir)):
+            return "Access denied", 403
+
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return send_file(file_path)
+        else:
+            return "Logo not found", 404
+    except Exception as e:
+        flask_app.logger.error(f"Error serving logo {filename}: {e}")
+        return "Error serving logo", 500
+
+
+@flask_app.route('/api/upload-logo', methods=['POST'])
+def upload_logo():
+    """上传logo图片"""
+    if not session.get('admin'):
+        return jsonify({'error': '未授权访问'}), 403
+
+    if 'logo' not in request.files:
+        return jsonify({'error': '没有选择文件'}), 400
+
+    file = request.files['logo']
+    if file.filename == '':
+        return jsonify({'error': '没有选择文件'}), 400
+
+    # 检查文件类型
+    allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+    if not ('.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in allowed_extensions):
+        return jsonify({'error': '不支持的文件格式，请使用PNG、JPG、JPEG、GIF或BMP格式'}), 400
+
+    try:
+        # 生成唯一文件名
+        import time
+        filename = secure_filename(file.filename)
+        name, ext = os.path.splitext(filename)
+        timestamp = str(int(time.time()))
+        new_filename = f"{name}_{timestamp}{ext}"
+
+        # 使用配置中的logo目录（程序运行目录）
+        logos_dir = config.logo_dir
+        os.makedirs(logos_dir, exist_ok=True)
+
+        # 保存文件
+        file_path = os.path.join(logos_dir, new_filename)
+        file.save(file_path)
+
+        # 清理旧的logo文件
+        from main import cleanup_old_logos
+        cleanup_old_logos(logos_dir, new_filename)
+
+        # 返回相对路径
+        relative_path = f"logos/{new_filename}"
+        return jsonify({'success': True, 'path': relative_path})
+
+    except Exception as e:
+        return jsonify({'error': f'上传失败: {str(e)}'}), 500
+
+
+@flask_app.route('/api/page-settings', methods=['GET', 'POST'])
+def page_settings():
+    """页面设置API"""
+    if not session.get('admin'):
+        return jsonify({'error': '未授权访问'}), 403
+
+    if request.method == 'GET':
+        # 获取当前页面设置
+        return jsonify({
+            'page_title': config.page_title,
+            'logo_name': config.logo_name,
+            'logo_image_url': config.logo_image_url
+        })
+
+    elif request.method == 'POST':
+        # 更新页面设置
+        data = request.json
+
+        page_title = data.get('page_title', '').strip()
+        logo_name = data.get('logo_name', '').strip()
+        logo_image_url = data.get('logo_image_url', '').strip()
+
+        if not page_title:
+            return jsonify({'error': '页面标题不能为空'}), 400
+
+        if not logo_name:
+            return jsonify({'error': 'Logo名称不能为空'}), 400
+
+        # 如果logo_image_url是远程URL或为空，清理本地logo文件
+        if not logo_image_url or logo_image_url.startswith(('http://', 'https://')):
+            from main import cleanup_old_logos
+            cleanup_old_logos(config.logo_dir)
+
+        # 更新配置
+        config.page_title = page_title
+        config.logo_name = logo_name
+        config.logo_image_url = logo_image_url
+
+        # 保存配置
+        config.save()
+
+        client_info = get_client_info()
+        flask_app.logger.info(f"{client_info} 更新了页面设置")
+
+        return jsonify({'success': True, 'message': '页面设置已更新'})
+
+
+@flask_app.route('/api/directory/<alias>', methods=['GET', 'PUT', 'DELETE'])
 def manage_directory(alias):
     if not session.get('admin'):
         return 'Unauthorized', 403
 
     client_info = f"{request.remote_addr}"
+
+    if request.method == 'GET':
+        # 获取目录详细信息
+        for name, dir_obj in config.shared_dirs.items():
+            if dir_obj.alias == alias:
+                return jsonify({
+                    'alias': dir_obj.alias,
+                    'password': dir_obj.password,
+                    'admin_password': dir_obj.admin_password,
+                    'desc': dir_obj.desc,
+                    'path': dir_obj.path
+                })
+        return 'Directory not found', 404
 
     if request.method == 'DELETE':
         for name, dir_obj in config.shared_dirs.items():
@@ -989,6 +1323,7 @@ def manage_directory(alias):
                 dir_obj.alias = secure_alias
                 dir_obj.desc = data.get('desc', dir_obj.desc)
                 dir_obj.password = data.get('password', '')
+                dir_obj.admin_password = data.get('admin_password', '')  # 新增：处理目录管理密码
                 new_password = "有密码" if dir_obj.password else "无密码"
 
                 config.save()
@@ -1258,7 +1593,7 @@ def share_batch_download(token):
 
 @flask_app.route('/api/upload/status/<file_id>')
 def check_upload_status(file_id):
-    temp_dir = os.path.join(config.temp_path, file_id)
+    temp_dir = os.path.join(config.upload_temp_dir, file_id)
     uploaded_chunks = len(os.listdir(temp_dir)) if os.path.exists(temp_dir) else 0
     return jsonify({'uploaded_chunks': uploaded_chunks})
 

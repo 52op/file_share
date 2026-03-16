@@ -162,6 +162,11 @@
                             <input type="password" class="form-control" name="password">
                         </div>
                         <div class="mb-3">
+                            <label class="form-label">目录管理密码（可选）</label>
+                            <input type="password" class="form-control" name="admin_password">
+                            <small class="text-muted">设置此目录的管理密码，拥有此密码的用户可以管理此目录。留空表示只有超级管理员可以管理</small>
+                        </div>
+                        <div class="mb-3">
                             <label class="form-label">描述（可选）</label>
                             <textarea class="form-control" name="desc" rows="3"></textarea>
                         </div>
@@ -195,6 +200,11 @@
                             <small class="text-muted">留空表示取消访问密码</small>
                         </div>
                         <div class="mb-3">
+                            <label class="form-label">目录管理密码（可选）</label>
+                            <input type="password" class="form-control" name="admin_password" id="editAdminPassword">
+                            <small class="text-muted">设置此目录的管理密码，拥有此密码的用户可以管理此目录。留空表示只有超级管理员可以管理</small>
+                        </div>
+                        <div class="mb-3">
                             <label class="form-label">描述（可选）</label>
                             <textarea class="form-control" name="desc" id="editDesc" rows="3"></textarea>
                         </div>
@@ -218,15 +228,65 @@
                 </div>
                 <form id="settingsForm" onsubmit="updateSettings(event)">
                     <div class="modal-body">
-                        <div class="mb-3">
-                            <label class="form-label">全局访问密码</label>
-                            <input type="password" class="form-control" name="global_password">
-                            <small class="text-muted">留空表示不需要密码</small>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">管理密码</label>
-                            <input type="password" class="form-control" name="admin_password">
-                            <small class="text-muted">留空表示不修改</small>
+                        <!-- 页面设置选项卡 -->
+                        <ul class="nav nav-tabs" id="settingsTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="page-tab" data-bs-toggle="tab" data-bs-target="#page-settings" type="button" role="tab">
+                                    <i class="bi bi-palette me-1"></i>页面设置
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="security-tab" data-bs-toggle="tab" data-bs-target="#security-settings" type="button" role="tab">
+                                    <i class="bi bi-shield-lock me-1"></i>安全设置
+                                </button>
+                            </li>
+                        </ul>
+
+                        <div class="tab-content mt-3" id="settingsTabContent">
+                            <!-- 页面设置 -->
+                            <div class="tab-pane fade show active" id="page-settings" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">页面标题</label>
+                                    <input type="text" class="form-control" id="pageTitle" name="page_title" value="{{ page_title }}">
+                                    <small class="text-muted">显示在浏览器标签页上的标题</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Logo名称</label>
+                                    <input type="text" class="form-control" id="logoName" name="logo_name" value="{{ logo_name }}">
+                                    <small class="text-muted">左上角显示的Logo名称</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Logo图片</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="logoImageUrl" name="logo_image_url" value="{{ logo_image_url }}" placeholder="图片URL或留空">
+                                        <button class="btn btn-outline-secondary" type="button" onclick="document.getElementById('logoFileInput').click()">
+                                            <i class="bi bi-upload"></i> 上传
+                                        </button>
+                                    </div>
+                                    <input type="file" id="logoFileInput" accept="image/*" style="display: none;" onchange="uploadLogo(this)">
+                                    <small class="text-muted">支持本地上传或远程URL，推荐尺寸：高度30px</small>
+                                    <div id="logoPreview" class="mt-2">
+                                        {% if logo_image_url %}
+                                            <img src="{% if logo_image_url.startswith('http') %}{{ logo_image_url }}{% else %}{{ url_for('static', filename=logo_image_url) }}{% endif %}"
+                                                 alt="Logo预览" height="30" class="border rounded">
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 安全设置 -->
+                            <div class="tab-pane fade" id="security-settings" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">全局访问密码</label>
+                                    <input type="password" class="form-control" name="global_password">
+                                    <small class="text-muted">留空表示不需要密码</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">管理密码</label>
+                                    <input type="password" class="form-control" name="admin_password">
+                                    <small class="text-muted">留空表示不修改</small>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -340,14 +400,65 @@
                 });
                 if (!response.ok) throw new Error('Failed to update settings');
                 location.reload();
+            },
+
+            async updatePageSettings(data) {
+                const response = await fetch('/api/page-settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to update page settings');
+                }
+                return response.json();
+            },
+
+            async uploadLogo(file) {
+                const formData = new FormData();
+                formData.append('logo', file);
+
+                const response = await fetch('/api/upload-logo', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to upload logo');
+                }
+                return response.json();
             }
         };
 
         // Directory Management Functions
         async function editDirectory(alias, desc) {
             const modal = new bootstrap.Modal(document.getElementById('editDirModal'));
-            document.getElementById('editAlias').value = alias;
-            document.getElementById('editDesc').value = desc;
+
+            try {
+                // 获取目录详细信息
+                const response = await fetch(`/api/directory/${alias}`);
+                if (response.ok) {
+                    const dirInfo = await response.json();
+                    document.getElementById('editAlias').value = dirInfo.alias;
+                    document.getElementById('editDesc').value = dirInfo.desc;
+                    document.getElementById('editAdminPassword').value = dirInfo.admin_password || '';
+                    // 访问密码字段需要通过name属性获取
+                    document.querySelector('input[name="password"]').value = dirInfo.password || '';
+                } else {
+                    // 如果获取失败，使用传入的参数
+                    document.getElementById('editAlias').value = alias;
+                    document.getElementById('editDesc').value = desc;
+                }
+            } catch (err) {
+                // 如果获取失败，使用传入的参数
+                document.getElementById('editAlias').value = alias;
+                document.getElementById('editDesc').value = desc;
+            }
+
             modal.show();
 
             document.getElementById('editDirForm').onsubmit = async (e) => {
@@ -373,21 +484,132 @@
             }
         }
 
+        // Logo Upload Handler
+        async function uploadLogo(input) {
+            if (!input.files || !input.files[0]) return;
+
+            const file = input.files[0];
+
+            // 验证文件类型
+            const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/bmp'];
+            if (!allowedTypes.includes(file.type)) {
+                alert('请选择有效的图片文件（PNG、JPG、JPEG、GIF或BMP）');
+                input.value = '';
+                return;
+            }
+
+            // 验证文件大小（限制为5MB）
+            if (file.size > 5 * 1024 * 1024) {
+                alert('图片文件大小不能超过5MB');
+                input.value = '';
+                return;
+            }
+
+            try {
+                const result = await API.uploadLogo(file);
+
+                // 更新输入框、预览和favicon
+                document.getElementById('logoImageUrl').value = result.path;
+                updateLogoPreview(result.path);
+                updateFavicon(result.path);
+
+                alert('Logo上传成功！');
+            } catch (err) {
+                alert('上传失败: ' + err.message);
+                input.value = '';
+            }
+        }
+
+        // Update Logo Preview
+        function updateLogoPreview(imagePath) {
+            const preview = document.getElementById('logoPreview');
+            if (imagePath) {
+                const isRemoteUrl = imagePath.startsWith('http');
+                const src = isRemoteUrl ? imagePath : `/static/${imagePath}`;
+                preview.innerHTML = `<img src="${src}" alt="Logo预览" height="30" class="border rounded">`;
+            } else {
+                preview.innerHTML = '';
+            }
+        }
+
+        // Update Favicon
+        function updateFavicon(imagePath) {
+            const favicon = document.querySelector('link[rel="icon"]');
+            if (imagePath && imagePath.trim()) {
+                const isRemoteUrl = imagePath.startsWith('http');
+                const src = isRemoteUrl ? imagePath : `/static/${imagePath}`;
+                favicon.href = src;
+            } else {
+                favicon.href = '/static/favicon.ico';
+            }
+        }
+
         // Settings Management
         async function updateSettings(event) {
             event.preventDefault();
-            const formData = new FormData(event.target);
 
-            try {
-                await API.updateSettings(formData);
-                const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
-                modal.hide();
-                alert('设置已更新');
-                location.reload();
-            } catch (err) {
-                alert('更新设置失败: ' + err.message);
+            // 获取当前活跃的标签页
+            const activeTab = document.querySelector('#settingsTabs .nav-link.active').id;
+
+            if (activeTab === 'page-tab') {
+                // 处理页面设置
+                const pageTitle = document.getElementById('pageTitle').value.trim();
+                const logoName = document.getElementById('logoName').value.trim();
+                const logoImageUrl = document.getElementById('logoImageUrl').value.trim();
+
+                if (!pageTitle) {
+                    alert('页面标题不能为空');
+                    return;
+                }
+
+                if (!logoName) {
+                    alert('Logo名称不能为空');
+                    return;
+                }
+
+                try {
+                    await API.updatePageSettings({
+                        page_title: pageTitle,
+                        logo_name: logoName,
+                        logo_image_url: logoImageUrl
+                    });
+
+                    // 立即更新favicon
+                    updateFavicon(logoImageUrl);
+
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
+                    modal.hide();
+                    alert('页面设置已更新');
+                    location.reload();
+                } catch (err) {
+                    alert('更新页面设置失败: ' + err.message);
+                }
+            } else {
+                // 处理安全设置（原有逻辑）
+                const formData = new FormData(event.target);
+
+                try {
+                    await API.updateSettings(formData);
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
+                    modal.hide();
+                    alert('安全设置已更新');
+                    location.reload();
+                } catch (err) {
+                    alert('更新安全设置失败: ' + err.message);
+                }
             }
         }
+
+        // Logo URL输入框变化时更新预览和favicon
+        document.addEventListener('DOMContentLoaded', function() {
+            const logoUrlInput = document.getElementById('logoImageUrl');
+            if (logoUrlInput) {
+                logoUrlInput.addEventListener('input', function() {
+                    updateLogoPreview(this.value);
+                    updateFavicon(this.value);
+                });
+            }
+        });
 
         // Add Directory Form Handler
         document.getElementById('addDirForm').addEventListener('submit', async (e) => {

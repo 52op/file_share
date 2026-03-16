@@ -114,19 +114,39 @@
                     <i class="bi bi-folder-plus me-2"></i>新建文件夹
                 </button>
                 <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger float-end">
-                    <i class="bi bi-box-arrow-right me-2"></i>退出管理
+                    <i class="bi bi-box-arrow-right me-2"></i>退出超级管理
                 </a>
                 {#                <a class="btn btn-secondary float-end" href="/share-manager/{{ dir_obj.path|extract_first_dir }}" target="_blank">#}
-                <a class="btn btn-secondary float-end" href="/share-manager/{{ dir_obj.alias }}" target="_blank">
+                <a class="btn btn-secondary float-end me-2" href="/share-manager/{{ dir_obj.alias }}" target="_blank">
                     <i class="bi bi-share me-2"></i>私有分享
                 </a>
 
             </div>
+        {% elif session.get('dir_admin_' + current_dir) %}
+            <div class="mb-3">
+                <button class="btn btn-primary me-2" onclick="showUploadDialog()">
+                    <i class="bi bi-upload me-2"></i>上传文件
+                </button>
+                <button class="btn btn-success" onclick="showNewFolderDialog()">
+                    <i class="bi bi-folder-plus me-2"></i>新建文件夹
+                </button>
+                <a href="{{ url_for('dir_admin_logout', dirname=current_dir) }}" class="btn btn-outline-warning float-end">
+                    <i class="bi bi-box-arrow-right me-2"></i>退出目录管理
+                </a>
+                <span class="badge bg-warning text-dark float-end me-2 align-self-center">
+                    <i class="bi bi-shield-check me-1"></i>目录管理员
+                </span>
+            </div>
         {% else %}
             <div class="mb-3">
-                <button class="btn btn-outline-primary" onclick="showAdminLogin()">
-                    <i class="bi bi-shield-lock me-2"></i>管理员登录
+                <button class="btn btn-outline-primary me-2" onclick="showAdminLogin()">
+                    <i class="bi bi-shield-lock me-2"></i>超级管理员登录
                 </button>
+                {% if dir_obj.admin_password %}
+                <button class="btn btn-outline-warning" onclick="showDirAdminLogin()">
+                    <i class="bi bi-key me-2"></i>目录管理员登录
+                </button>
+                {% endif %}
             </div>
         {% endif %}
 
@@ -141,7 +161,7 @@
             <button class="btn btn-primary" onclick="downloadSelected()">
                 <i class="bi bi-download"></i> 打包下载
             </button>
-            {% if session.get('admin') %}
+            {% if session.get('admin') or session.get('dir_admin_' + current_dir) %}
             <button class="btn btn-primary" onclick="showMoveDialog()">
                 <i class="bi bi-folder-symlink"></i> 移动到
             </button>
@@ -211,13 +231,13 @@
                                 {% set binary_extensions = ('exe', 'zip', 'rar', '7z', 'gz', 'dll', 'iso') %}
                                 {% if not item.name.lower().endswith(binary_extensions) %}
                                     <button class="btn btn-sm btn-outline-info"
-                                            onclick="{{ 'editFile' if session.get('admin') else
+                                            onclick="{{ 'editFile' if (session.get('admin') or session.get('dir_admin_' + current_dir)) else
                                              'previewFile' }}('{{ item.name }}', '{{ item.path }}')" title="查看">
                                         <i class="bi bi-eye"></i>
                                     </button>
                                 {% endif %}
                             {% endif %}
-                            {% if session.get('admin') %}
+                            {% if session.get('admin') or session.get('dir_admin_' + current_dir) %}
                                 <button class="btn btn-sm btn-outline-primary"
                                         onclick="showMoveDialog(['{{ item.name }}'])" title="移动">
                                     <i class="bi bi-folder-symlink"></i>
@@ -334,17 +354,43 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">管理员登录</h5>
+                    <h5 class="modal-title">超级管理员登录</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <form id="adminLoginForm" onsubmit="return handleAdminLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">管理密码</label>
+                            <label class="form-label">超级管理密码</label>
                             <input type="password" class="form-control" id="adminPassword" required>
                             <div class="invalid-feedback" id="loginError"></div>
                         </div>
                         <button type="submit" class="btn btn-primary">登录</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 目录管理员登录模态框 -->
+    <div class="modal fade" id="dirAdminLoginModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">目录管理员登录</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="dirAdminLoginForm" onsubmit="return handleDirAdminLogin(event)">
+                        <input type="hidden" id="dirAdminDirname" value="{{ current_dir }}">
+                        <div class="mb-3">
+                            <label class="form-label">目录管理密码</label>
+                            <input type="password" class="form-control" id="dirAdminPassword" required>
+                            <div class="invalid-feedback" id="dirLoginError"></div>
+                            <div class="form-text">
+                                <i class="bi bi-info-circle"></i> 输入此目录的管理密码以获取管理权限
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-warning">登录</button>
                     </form>
                 </div>
             </div>
@@ -386,7 +432,17 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <input type="text" class="form-control" id="folderName" placeholder="文件夹名称">
+                    <div class="mb-3">
+                        <input type="text" class="form-control" id="folderName" placeholder="文件夹名称" oninput="validateFolderNameInput()">
+                        <div id="folderNameFeedback" class="form-text"></div>
+                    </div>
+                    <div class="alert alert-info small mb-0">
+                        <strong>命名规则：</strong><br>
+                        • 不能包含特殊字符: &lt; &gt; : " | ? * \ / # % &amp; { } $ ! ' @ + ` =<br>
+                        • 不能使用系统保留名称（如CON、PRN等）<br>
+                        • 不能以点开头或以点/空格结尾<br>
+                        • 最多255个字符
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -402,6 +458,8 @@
     <script src="/static/adminCheck.js"></script>
     <script>
         const isAdmin = {{ 'true' if session.get('admin') else 'false' }};
+        const isDirAdmin = {{ 'true' if session.get('dir_admin_' + current_dir) else 'false' }};
+        const hasAdminPermission = isAdmin || isDirAdmin;
 
         // 全局变量
         let uploadFiles = []; // 存储待上传的文件
@@ -533,9 +591,93 @@
         }
 
 
+        // 文件夹名称验证函数
+        function validateFolderName(name) {
+            if (!name.trim()) return '文件夹名称不能为空';
+
+            // 包含#号在内的所有问题字符
+            const invalidChars = /[<>:"|?*\\\/#%&{}$!'@+`=]/g;
+            const reservedNames = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'];
+
+            if (invalidChars.test(name)) {
+                return '文件夹名称不能包含以下字符: < > : " | ? * \\ / # % & { } $ ! \' @ + ` =';
+            }
+
+            if (reservedNames.includes(name.toUpperCase())) {
+                return '不能使用系统保留名称';
+            }
+
+            if (name.length > 255) return '文件夹名称过长（最多255个字符）';
+            if (name.startsWith('.')) return '文件夹名称不能以点开头';
+            if (name.endsWith('.') || name.endsWith(' ')) return '文件夹名称不能以点或空格结尾';
+
+            return null;
+        }
+
+        // 自动修正功能
+        function suggestFolderName(name) {
+            return name.replace(/[<>:"|?*\\\/#%&{}$!'@+`=]/g, '_')
+                      .replace(/^\.+/, '')
+                      .replace(/[. ]+$/, '')
+                      .substring(0, 255);
+        }
+
+        // 实时验证输入
+        function validateFolderNameInput() {
+            const input = document.getElementById('folderName');
+            const feedback = document.getElementById('folderNameFeedback');
+            const createBtn = document.querySelector('#newFolderDialog .btn-primary');
+
+            const name = input.value.trim();
+            const error = validateFolderName(name);
+
+            if (!name) {
+                feedback.textContent = '';
+                feedback.className = 'form-text';
+                input.className = 'form-control';
+                createBtn.disabled = false;
+            } else if (error) {
+                feedback.textContent = error;
+                feedback.className = 'form-text text-danger';
+                input.className = 'form-control is-invalid';
+                createBtn.disabled = true;
+
+                // 显示建议名称
+                const suggested = suggestFolderName(name);
+                if (suggested && suggested !== name) {
+                    feedback.innerHTML = `${error}<br><small class="text-muted">建议: ${suggested} <a href="#" onclick="applySuggestion('${suggested}'); return false;" class="text-primary">使用建议</a></small>`;
+                }
+            } else {
+                feedback.textContent = '✓ 文件夹名称有效';
+                feedback.className = 'form-text text-success';
+                input.className = 'form-control is-valid';
+                createBtn.disabled = false;
+            }
+        }
+
+        // 应用建议名称
+        function applySuggestion(suggested) {
+            document.getElementById('folderName').value = suggested;
+            validateFolderNameInput();
+        }
+
         async function createFolder() {
             const folderName = document.getElementById('folderName').value.trim();
             if (!folderName) return;
+
+            // 验证文件夹名称
+            const error = validateFolderName(folderName);
+            if (error) {
+                const suggested = suggestFolderName(folderName);
+                const message = `${error}\n\n建议使用: ${suggested}\n\n是否使用建议的名称？`;
+
+                if (confirm(message)) {
+                    document.getElementById('folderName').value = suggested;
+                    return;
+                } else {
+                    return;
+                }
+            }
 
             const currentPath = window.location.pathname;
             const formData = new FormData();
@@ -547,18 +689,38 @@
                     method: 'POST',
                     body: formData
                 });
+
                 if (response.ok) {
                     location.reload();
+                } else {
+                    const errorText = await response.text();
+                    alert('创建文件夹失败: ' + errorText);
                 }
             } catch (error) {
                 console.error('Error creating folder:', error);
+                alert('创建文件夹时发生错误');
             }
         }
 
         function renameItem(oldName, isDir) {
             const itemType = isDir ? '文件夹' : '文件';
-            const newName = prompt(`请输入新的${itemType}名称:`, oldName);
+            let newName = prompt(`请输入新的${itemType}名称:`, oldName);
             if (!newName || newName === oldName) return;
+
+            // 如果是文件夹，验证名称
+            if (isDir) {
+                const error = validateFolderName(newName);
+                if (error) {
+                    const suggested = suggestFolderName(newName);
+                    const message = `${error}\n\n建议使用: ${suggested}\n\n是否使用建议的名称？`;
+
+                    if (confirm(message)) {
+                        newName = suggested;
+                    } else {
+                        return;
+                    }
+                }
+            }
 
             const currentPath = window.location.pathname;
             const formData = new FormData();
@@ -575,7 +737,9 @@
                     if (response.ok) {
                         location.reload();
                     } else {
-                        throw new Error('重命名失败');
+                        return response.text().then(errorMsg => {
+                            throw new Error(errorMsg);
+                        });
                     }
                 })
                 .catch(error => {
@@ -785,12 +949,12 @@
             </button>
             ${!item.is_dir ? `
                 <button class="btn btn-sm btn-outline-info"
-                        onclick="${isAdmin ? 'editFile' : 'previewFile'}('${item.name}', '${item.path}')"
+                        onclick="${hasAdminPermission ? 'editFile' : 'previewFile'}('${item.name}', '${item.path}')"
                         title="查看">
                     <i class="bi bi-eye"></i>
                 </button>
             ` : ''}
-            ${isAdmin ? `
+            ${hasAdminPermission ? `
                 <button class="btn btn-sm btn-outline-primary"
                         onclick="showMoveDialog('${item.name}')" title="移动">
                     <i class="bi bi-folder-symlink"></i>
@@ -844,7 +1008,7 @@
         /* 移动文件逻辑 */
         // 显示移动对话框
         function showMoveDialog(singleItem = null) {
-            if (!isAdmin) {
+            if (!hasAdminPermission) {
                 alert('需要管理员权限');
                 return;
             }

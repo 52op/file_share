@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>目录管理员登录 - {{ pageMark }}</title>
+    <link href="{{ url_for('static', filename='bootstrap/css/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='bootstrap-icons/bootstrap-icons.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row justify-content-center align-items-center min-vh-100">
+            <div class="col-md-4">
+                <div class="card shadow">
+                    <div class="card-header text-center bg-primary text-white">
+                        <h4><i class="bi bi-shield-lock"></i> 目录管理员登录</h4>
+                        <p class="mb-0">目录: {{ dirname }}</p>
+                    </div>
+                    <div class="card-body">
+                        {% if error %}
+                        <div class="alert alert-danger" role="alert">
+                            <i class="bi bi-exclamation-triangle"></i> {{ error }}
+                        </div>
+                        {% endif %}
+                        
+                        <form method="post" action="{{ url_for('dir_admin_login') }}">
+                            <input type="hidden" name="dirname" value="{{ dirname }}">
+                            <div class="mb-3">
+                                <label for="password" class="form-label">
+                                    <i class="bi bi-key"></i> 管理密码
+                                </label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control" id="password" name="password" 
+                                           placeholder="请输入目录管理密码" required autofocus>
+                                    <button class="btn btn-outline-secondary" type="button" id="togglePassword">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                </div>
+                                <div class="form-text">
+                                    <i class="bi bi-info-circle"></i> 输入此目录的管理密码以获取管理权限
+                                </div>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-box-arrow-in-right"></i> 登录
+                                </button>
+                                <a href="{{ url_for('list_dir', dirname=dirname) }}" class="btn btn-outline-secondary">
+                                    <i class="bi bi-arrow-left"></i> 返回目录
+                                </a>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="card-footer text-center text-muted">
+                        <small>
+                            <i class="bi bi-shield-check"></i> 
+                            目录管理员可以上传、删除、重命名文件和创建分享链接
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='bootstrap/js/bootstrap.bundle.min.js') }}"></script>
+    <script>
+        // 密码显示/隐藏切换
+        document.getElementById('togglePassword').addEventListener('click', function() {
+            const passwordInput = document.getElementById('password');
+            const icon = this.querySelector('i');
+            
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                icon.className = 'bi bi-eye-slash';
+            } else {
+                passwordInput.type = 'password';
+                icon.className = 'bi bi-eye';
+            }
+        });
+
+        // 自动聚焦到密码输入框
+        document.getElementById('password').focus();
+    </script>
+</body>
+</html>

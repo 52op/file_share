@@ -1,13 +1,21 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <title>{{ pageMark|default("") }} - FS文件分享服务工具 - letvar@qq.com</title>
+    <title>{{ pageMark|default("") }} - {{ page_title|default("FS文件分享服务工具") }} - letvar@qq.com</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="FS文件分享服务工具，提供高效、安全的文件共享服务。支持多平台访问，简单易用，适合个人和企业使用。">
     <meta name="keywords" content="文件分享, 文件共享, http文件服务器, 文件传输, 文件管理, 文件服务, letvar@qq.com">
     <meta name="author" content="letvar@qq.com">
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    {% if logo_image_url and logo_image_url.strip() %}
+        {% if logo_image_url.startswith('http') %}
+            <link rel="icon" type="image/x-icon" href="{{ logo_image_url }}">
+        {% else %}
+            <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename=logo_image_url) }}">
+        {% endif %}
+    {% else %}
+        <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    {% endif %}
     <script src="/static/customAlert.js"></script>
 
     <!-- 内联加载中效果的 CSS -->
@@ -99,6 +107,18 @@
         .input-group.search .btn-clear:hover {
             background-color: #f8f9fa;
         }
+
+        /* 优化navbar-brand的显示 */
+        .navbar-brand {
+            display: flex;
+            align-items: center;
+        }
+
+        .navbar-brand img {
+            max-height: 30px;
+            width: auto;
+            object-fit: contain;
+        }
     </style>
 
     <!-- 动态加载保存的主题样式 -->
@@ -138,7 +158,18 @@
 <!-- Navigation Bar -->
 <nav class="navbar navbar-expand-lg navbar-light bg-light">
     <div class="container-fluid">
-        <a class="navbar-brand" href="/">File Share</a>
+        <a class="navbar-brand" href="/">
+            {% if logo_image_url and logo_image_url.strip() %}
+                {% if logo_image_url.startswith('http') %}
+                    <img src="{{ logo_image_url }}" alt="{{ logo_name|default('File Share') }}" height="30" class="me-2" onerror="this.style.display='none'">
+                {% else %}
+                    <img src="{{ url_for('static', filename=logo_image_url) }}" alt="{{ logo_name|default('File Share') }}" height="30" class="me-2" onerror="this.style.display='none'">
+                {% endif %}
+                {{ logo_name|default("File Share") }}
+            {% else %}
+                {{ logo_name|default("File Share") }}
+            {% endif %}
+        </a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
             <span class="navbar-toggler-icon"></span>
         </button>

@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+build/
+certs/
+dist/
+logs/
+temp/
+*.spec
+*.json
