@@ -2,7 +2,7 @@ python-docx
 python-pptx
 loguru
 pypinyin
-cryptography
+cryptography==3.4.8
 requests
 Flask
 netifaces
