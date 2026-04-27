@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from pathlib import Path
 
-# 项目根目录（当前 spec 文件所在目录）
-PROJECT_ROOT = Path(__file__).resolve().parent
+# 项目根目录（兼容 PyInstaller 执行 spec 时 __file__ 不存在）
+if "__file__" in globals():
+    PROJECT_ROOT = Path(__file__).resolve().parent
+else:
+    PROJECT_ROOT = Path(os.getcwd()).resolve()
 
 # 动态收集 tkinterdnd2 数据目录，避免写死虚拟环境路径
 try:
