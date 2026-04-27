@@ -55,6 +55,12 @@ a = Analysis(
         "win32serviceutil",
         "win32event",
         "servicemanager",
+        "pywintypes",
+        "pythoncom",
+        "win32api",
+        "win32con",
+        "win32evtlogutil",
+        "win32evtlog",
         # 运行时导入的模块
         "cheroot",
         "cheroot.wsgi",

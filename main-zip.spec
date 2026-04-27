@@ -47,10 +47,14 @@ a = Analysis(
         "cryptography",
         "loguru",
         # Windows 服务相关（动态导入）
+        "pywintypes",
+        "pythoncom",
         "win32timezone",
         "win32service",
         "win32serviceutil",
         "win32event",
+        "win32api",
+        "win32con",
         "servicemanager",
         # 运行时导入的模块
         "cheroot",

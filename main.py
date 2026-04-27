@@ -1,6 +1,5 @@
 import json
 import logging
-from loguru import logger as loguru_logger
 import os
 import re
 import socket
@@ -9,38 +8,49 @@ import sys
 import threading
 import time
 
-import servicemanager
-import win32event
-import win32serviceutil
-import win32service
-import ctypes
-from logging.handlers import TimedRotatingFileHandler
-import traceback
+from loguru import logger as loguru_logger
 
-import netifaces
+try:
+    import servicemanager
+    import win32event
+    import win32service
+    import win32serviceutil
+
+    PYWIN32_AVAILABLE = True
+except ImportError:
+    servicemanager = None
+    win32event = None
+    win32serviceutil = None
+    win32service = None
+    PYWIN32_AVAILABLE = False
+import ctypes
 import tkinter as tk
+import traceback
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import wraps
+from logging.handlers import TimedRotatingFileHandler
 from tkinter import filedialog
 from tkinter import messagebox as tkmessagebox
-from PIL import ImageTk
 
+import netifaces
 import pystray
 import ttkbootstrap as ttk
-from PIL import Image
 from flask import Flask, render_template, request, session
+from PIL import Image, ImageTk
 from tkinterdnd2 import *  # 用于拖放支持
 from ttkbootstrap.constants import *
 from ttkbootstrap.scrolled import ScrolledText
 from user_agents import parse
+
 # Cheroot服务器（替换Waitress）
 from werkzeug.serving import make_server  # 开发环境使用
-from concurrent.futures import ThreadPoolExecutor
 
 # 添加拼音转换支持
 try:
-    from pypinyin import lazy_pinyin, Style
+    from pypinyin import Style, lazy_pinyin
+
     PINYIN_AVAILABLE = True
 except ImportError:
     PINYIN_AVAILABLE = False
@@ -48,7 +58,7 @@ except ImportError:
 
 def get_app_path(tempdir=False):
     """获取应用程序路径 传True取临时文件夹路径"""
-    if getattr(sys, 'frozen', False):
+    if getattr(sys, "frozen", False):
         if tempdir:
             # 打包成单文件后程序运行生成的临时文件夹路径常用于取打包在EXE中的资源文件路径 如窗口图标等
             return sys._MEIPASS
@@ -68,7 +78,7 @@ def setup_service_logger(flask_app=None):
     global _loguru_initialized
 
     # 获取日志目录
-    log_dir = os.path.join(get_app_path(), 'logs')
+    log_dir = os.path.join(get_app_path(), "logs")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
@@ -78,7 +88,7 @@ def setup_service_logger(flask_app=None):
         loguru_logger.remove()
 
         # 添加文件处理器
-        log_file = os.path.join(log_dir, 'service_{time:YYYYMMDD}.log')
+        log_file = os.path.join(log_dir, "service_{time:YYYYMMDD}.log")
         loguru_logger.add(
             log_file,
             rotation="00:00",
@@ -88,7 +98,9 @@ def setup_service_logger(flask_app=None):
             enqueue=True,
             backtrace=True,  # 添加异常追踪
             diagnose=True,  # 添加诊断信息
-            filter=lambda record: 'Task queue depth' not in record["message"]  # 添加过滤器
+            filter=lambda record: (
+                "Task queue depth" not in record["message"]
+            ),  # 添加过滤器
         )
 
         _loguru_initialized = True
@@ -97,7 +109,7 @@ def setup_service_logger(flask_app=None):
     # 配置 logging
     logging.basicConfig(level=logging.INFO)
     # 过滤Cheroot的警告日志
-    logging.getLogger('cheroot').setLevel(logging.ERROR)
+    logging.getLogger("cheroot").setLevel(logging.ERROR)
     # 手动添加 LoguruHandler 将 logging 的日志重定向到 loguru
     logging.getLogger().addHandler(loguru_handler())
 
@@ -113,6 +125,7 @@ def setup_service_logger(flask_app=None):
 
 def loguru_handler():
     """创建一个将日志转发到 loguru 的处理器"""
+
     class LoguruHandler(logging.Handler):
         def emit(self, record):
             try:
@@ -120,7 +133,9 @@ def loguru_handler():
             except ValueError:
                 level = record.levelno
 
-            loguru_logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+            loguru_logger.opt(depth=6, exception=record.exc_info).log(
+                level, record.getMessage()
+            )
 
     return LoguruHandler()
 
@@ -128,6 +143,7 @@ def loguru_handler():
 def get_optimal_threads():
     """根据CPU核心计算最优线程数"""
     import multiprocessing
+
     cpu_count = multiprocessing.cpu_count()
     threads = cpu_count * 2
 
@@ -148,10 +164,10 @@ runningPort = 12345
 
 # 添加一个全局字典来存储密码修改时间戳
 password_change_timestamps = {
-    'global': 0,  # 全局密码最后修改时间
-    'admin': 0,  # 管理员密码最后修改时间
-    'directories': {},  # 各目录密码最后修改时间
-    'shares': {}  # 分享链接密码最后修改时间
+    "global": 0,  # 全局密码最后修改时间
+    "admin": 0,  # 管理员密码最后修改时间
+    "directories": {},  # 各目录密码最后修改时间
+    "shares": {},  # 分享链接密码最后修改时间
 }
 
 
@@ -167,10 +183,10 @@ def get_path(relative_path):
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(('8.8.8.8', 80))
+        s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
     except Exception:
-        ip = '127.0.0.1'
+        ip = "127.0.0.1"
     finally:
         s.close()
     return ip
@@ -183,20 +199,22 @@ def get_global_ipv6():
             addrs = netifaces.ifaddresses(interface)
             if netifaces.AF_INET6 in addrs:
                 for addr in addrs[netifaces.AF_INET6]:
-                    addr_ip = addr['addr'].split('%')[0]  # 去掉接口后缀
+                    addr_ip = addr["addr"].split("%")[0]  # 去掉接口后缀
                     # 选择全局单播地址（2001: 或 240 开头），并排除临时地址
-                    if (addr_ip.startswith('2001:') or addr_ip.startswith('240')) and not addr.get('temporary', False):
+                    if (
+                        addr_ip.startswith("2001:") or addr_ip.startswith("240")
+                    ) and not addr.get("temporary", False):
                         return addr_ip
         return None
     except Exception:
-        return '::1'
+        return "::1"
 
 
 def chinese_to_pinyin(text):
     """将中文转换为拼音"""
     if not PINYIN_AVAILABLE:
         # 如果没有pypinyin库，返回简单的处理
-        return re.sub(r'[^\w]', '', text.lower())
+        return re.sub(r"[^\w]", "", text.lower())
 
     if not text:
         return ""
@@ -204,20 +222,20 @@ def chinese_to_pinyin(text):
     # 使用pypinyin转换中文为拼音
     pinyin_list = lazy_pinyin(text, style=Style.NORMAL)
     # 连接拼音并移除非字母数字字符
-    result = ''.join(pinyin_list)
+    result = "".join(pinyin_list)
     # 只保留字母数字和下划线
-    result = re.sub(r'[^\w]', '', result.lower())
+    result = re.sub(r"[^\w]", "", result.lower())
 
     # 如果结果为空或以数字开头，添加前缀
     if not result or result[0].isdigit():
-        result = 'dir_' + result
+        result = "dir_" + result
 
     return result
 
 
 def validate_alias(P):
     # 只允许字母、数字、下划线和连字符
-    return bool(re.match(r'^[a-zA-Z0-9_-]+$', P))
+    return bool(re.match(r"^[a-zA-Z0-9_-]+$", P))
 
 
 def cleanup_old_logos(logo_dir, current_logo_filename=None):
@@ -229,7 +247,7 @@ def cleanup_old_logos(logo_dir, current_logo_filename=None):
         # 获取所有logo文件
         logo_files = []
         for file in os.listdir(logo_dir):
-            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+            if file.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp")):
                 logo_files.append(file)
 
         # 删除除当前logo外的所有文件
@@ -260,23 +278,25 @@ def cleanup_old_logos(logo_dir, current_logo_filename=None):
 
 def secure_filename_cn(filename):
     # 移除路径分隔符
-    filename = filename.replace('/', '').replace('\\', '')
+    filename = filename.replace("/", "").replace("\\", "")
     # 移除其他危险字符
-    filename = re.sub(r'[<>:"|?*]', '', filename)
+    filename = re.sub(r'[<>:"|?*]', "", filename)
     # 确保文件名不以点开头（隐藏文件）
-    if filename.startswith('.'):
-        filename = '_' + filename
+    if filename.startswith("."):
+        filename = "_" + filename
     return filename.strip()
 
 
 def get_client_info():
-    user_agent_string = request.headers.get('User-Agent')
+    user_agent_string = request.headers.get("User-Agent")
     user_agent = parse(user_agent_string)
     ip = request.remote_addr
 
     # Get detailed system and browser info
     os_info = f"{user_agent.os.family} {user_agent.os.version_string}".strip()
-    browser_info = f"{user_agent.browser.family} {user_agent.browser.version_string}".strip()
+    browser_info = (
+        f"{user_agent.browser.family} {user_agent.browser.version_string}".strip()
+    )
 
     return f"IP:{ip} 系统:{os_info} 浏览器:{browser_info}"
 
@@ -299,8 +319,13 @@ class ToolTip:
         self.tooltip.wm_geometry(f"+{x}+{y}")
 
         label = ttk.Label(
-            self.tooltip, text=self.text, background="#FFFFE0", relief=tk.SOLID, borderwidth=1,
-            font=("宋体", 8, "normal"), foreground="green"
+            self.tooltip,
+            text=self.text,
+            background="#FFFFE0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=("宋体", 8, "normal"),
+            foreground="green",
         )
         label.pack(ipadx=3, ipady=3)
 
@@ -318,7 +343,7 @@ class ShareDirectory:
         self.desc = desc
         self.admin_password = admin_password  # 新增：目录管理密码
         # 处理分区根目录
-        if path.endswith(':\\'):
+        if path.endswith(":\\"):
             self.name = f"drive_{path[0].lower()}"
         else:
             self.name = os.path.basename(path)
@@ -330,7 +355,7 @@ class ShareDirectory:
             "password": self.password,
             "name": self.name,  # 保存唯一标识名
             "desc": self.desc,
-            "admin_password": self.admin_password  # 新增：保存目录管理密码
+            "admin_password": self.admin_password,  # 新增：保存目录管理密码
         }
 
     @staticmethod
@@ -340,7 +365,7 @@ class ShareDirectory:
             data.get("alias", ""),
             data["password"],
             data.get("desc", ""),
-            data.get("admin_password", "")  # 新增：从配置文件恢复目录管理密码
+            data.get("admin_password", ""),  # 新增：从配置文件恢复目录管理密码
         )
         dir_obj.name = data.get("name", dir_obj.name)  # 恢复唯一标识名
         return dir_obj
@@ -348,14 +373,16 @@ class ShareDirectory:
 
 class RedirectHandler:
     """自定义sink，将日志消息输出到 ScrolledText 组件"""
+
     def __init__(self, text_widget):
         self.text_widget = text_widget
 
     def write(self, message):
         """将日志消息写入 ScrolledText"""
+
         def append():
-            self.text_widget.insert('end', message)
-            self.text_widget.see('end')
+            self.text_widget.insert("end", message)
+            self.text_widget.see("end")
 
         self.text_widget.after(0, append)
 
@@ -406,13 +433,19 @@ class Config:
                     "alias": dir_obj.alias,
                     "password": dir_obj.password,
                     "name": dir_obj.name,
-                    "desc": getattr(dir_obj, 'desc', ''),  # 使用 getattr 安全获取 desc 属性
-                    "admin_password": getattr(dir_obj, 'admin_password', '')  # 新增：保存目录管理密码
+                    "desc": getattr(
+                        dir_obj, "desc", ""
+                    ),  # 使用 getattr 安全获取 desc 属性
+                    "admin_password": getattr(
+                        dir_obj, "admin_password", ""
+                    ),  # 新增：保存目录管理密码
                 }
                 for name, dir_obj in self.shared_dirs.items()
             },
             "global_password": self.global_password,
-            "admin_password": self.admin_password if self.admin_password else "admin",  # 修复：移除对全局config的引用
+            "admin_password": self.admin_password
+            if self.admin_password
+            else "admin",  # 修复：移除对全局config的引用
             "port": self.port,
             "dark_theme": self.dark_theme,
             "log_to_file": self.log_to_file,
@@ -455,8 +488,12 @@ class Config:
                 self.log_to_file = data.get("log_to_file", False)
                 self.use_waitress = data.get("use_waitress", False)
                 self.cleanup_time = data.get("cleanup_time", 3600)  # 新增：加载清理间隔
-                self.auto_cleanup = data.get("auto_cleanup", True)  # 新增：加载自动清理设置
-                self.upload_temp_dir = data.get("upload_temp_dir", "temp/upload/")  # 新增：加载上传临时目录
+                self.auto_cleanup = data.get(
+                    "auto_cleanup", True
+                )  # 新增：加载自动清理设置
+                self.upload_temp_dir = data.get(
+                    "upload_temp_dir", "temp/upload/"
+                )  # 新增：加载上传临时目录
                 # SSL相关配置
                 self.ssl_enabled = data.get("ssl_enabled", False)
                 self.ssl_port = data.get("ssl_port", 443)
@@ -487,7 +524,7 @@ def format_file_size(size_in_bytes):
 
 
 def partial_download(path, start, end):
-    with open(path, 'rb') as f:
+    with open(path, "rb") as f:
         f.seek(start)
         chunk = 8192
         while True:
@@ -501,7 +538,7 @@ def partial_download(path, start, end):
 
 
 def send_file_generator(path):
-    with open(path, 'rb') as f:
+    with open(path, "rb") as f:
         while True:
             chunk = f.read(8192)
             if not chunk:
@@ -509,8 +546,12 @@ def send_file_generator(path):
             yield chunk
 
 
+from cleanup_manager import (
+    is_cleanup_running,
+    start_cleanup_thread,
+    stop_cleanup_thread,
+)
 from routes import *
-from cleanup_manager import start_cleanup_thread, stop_cleanup_thread, is_cleanup_running
 
 
 class DirectoryDialog(ttk.Toplevel):
@@ -519,7 +560,7 @@ class DirectoryDialog(ttk.Toplevel):
         self.withdraw()  # 先隐藏窗口
         self.title("目录设置")
         self.geometry("400x250")
-        icon_path = get_path('static/favicon.ico')
+        icon_path = get_path("static/favicon.ico")
         self.iconbitmap(icon_path)
 
         self.result = None
@@ -540,16 +581,19 @@ class DirectoryDialog(ttk.Toplevel):
         self.alias_var = tk.StringVar(value=dir_obj.alias if dir_obj else "")
 
         # 添加别名验证
-        vcmd = (self.register(validate_alias), '%P')
+        vcmd = (self.register(validate_alias), "%P")
         self.alias_entry = ttk.Entry(
             alias_frame,
             textvariable=self.alias_var,
-            validate='key',
-            validatecommand=vcmd
+            validate="key",
+            validatecommand=vcmd,
         )
         self.alias_entry.pack(side=LEFT, fill=X, expand=YES)
-        ToolTip(self.alias_entry, "也就是目录的别名，在WEB页面显示的目录名称\n设跟真实文件夹不一样的名称有助于安全"
-                                  "\n 只支持英文与数字组合")
+        ToolTip(
+            self.alias_entry,
+            "也就是目录的别名，在WEB页面显示的目录名称\n设跟真实文件夹不一样的名称有助于安全"
+            "\n 只支持英文与数字组合",
+        )
 
         # 密码设置
         pwd_frame = ttk.Frame(self)
@@ -564,7 +608,7 @@ class DirectoryDialog(ttk.Toplevel):
             self.pwd_entry,
             text="○/●️",
             width=3,
-            command=lambda: self.toggle_password_visibility(self.pwd_entry)
+            command=lambda: self.toggle_password_visibility(self.pwd_entry),
         )
         self.show_pwd_btn.pack(side=RIGHT)
 
@@ -572,8 +616,12 @@ class DirectoryDialog(ttk.Toplevel):
         admin_pwd_frame = ttk.Frame(self)
         admin_pwd_frame.pack(fill=X, padx=10, pady=5)
         ttk.Label(admin_pwd_frame, text="管理密码:").pack(side=LEFT)
-        self.admin_password_var = tk.StringVar(value=dir_obj.admin_password if dir_obj else "")
-        self.admin_pwd_entry = ttk.Entry(admin_pwd_frame, textvariable=self.admin_password_var, show="*")
+        self.admin_password_var = tk.StringVar(
+            value=dir_obj.admin_password if dir_obj else ""
+        )
+        self.admin_pwd_entry = ttk.Entry(
+            admin_pwd_frame, textvariable=self.admin_password_var, show="*"
+        )
         self.admin_pwd_entry.pack(side=LEFT, fill=X, expand=YES)
 
         # 添加显示/隐藏管理密码按钮
@@ -581,10 +629,13 @@ class DirectoryDialog(ttk.Toplevel):
             self.admin_pwd_entry,
             text="○/●️",
             width=3,
-            command=lambda: self.toggle_password_visibility(self.admin_pwd_entry)
+            command=lambda: self.toggle_password_visibility(self.admin_pwd_entry),
         )
         self.show_admin_pwd_btn.pack(side=RIGHT)
-        ToolTip(self.admin_pwd_entry, "设置此目录的管理密码，拥有此密码的用户可以管理此目录\n留空表示只有超级管理员可以管理")
+        ToolTip(
+            self.admin_pwd_entry,
+            "设置此目录的管理密码，拥有此密码的用户可以管理此目录\n留空表示只有超级管理员可以管理",
+        )
 
         # 添加描述输入框
         desc_frame = ttk.Frame(self)
@@ -625,7 +676,7 @@ class DirectoryDialog(ttk.Toplevel):
         # 设置拖放支持
         try:
             self.path_entry.drop_target_register(DND_FILES)
-            self.path_entry.dnd_bind('<<Drop>>', self.handle_drop)
+            self.path_entry.dnd_bind("<<Drop>>", self.handle_drop)
         except:
             print("DND support not available for this entry")
 
@@ -634,12 +685,12 @@ class DirectoryDialog(ttk.Toplevel):
 
     # 添加切换密码显示的方法
     def toggle_password_visibility(self, entry):
-        if entry.cget('show') == '*':
-            entry.configure(show='')
-            self.show_pwd_btn.configure(style='warning.TButton')
+        if entry.cget("show") == "*":
+            entry.configure(show="")
+            self.show_pwd_btn.configure(style="warning.TButton")
         else:
-            entry.configure(show='*')
-            self.show_pwd_btn.configure(style='TButton')
+            entry.configure(show="*")
+            self.show_pwd_btn.configure(style="TButton")
 
     def handle_drop(self, event):
         """处理拖拽到路径输入框的文件"""
@@ -653,7 +704,7 @@ class DirectoryDialog(ttk.Toplevel):
                 self.path_var.set(normalized_path)
 
                 # 生成默认别名
-                if normalized_path.endswith(':\\'):
+                if normalized_path.endswith(":\\"):
                     # 处理磁盘根目录
                     default_alias = f"disk_{normalized_path[0].upper()}"
                 else:
@@ -667,24 +718,28 @@ class DirectoryDialog(ttk.Toplevel):
                         default_alias = chinese_to_pinyin(dir_name)
                         # 如果转换后为空，使用原名称的安全版本
                         if not default_alias:
-                            default_alias = re.sub(r'[^\w]', '', dir_name.lower())
+                            default_alias = re.sub(r"[^\w]", "", dir_name.lower())
                             if not default_alias or default_alias[0].isdigit():
-                                default_alias = 'dir_' + default_alias
+                                default_alias = "dir_" + default_alias
 
                 # 设置别名，使用和browse_dir相同的逻辑
                 # 临时禁用验证，设置别名后重新启用
-                self.alias_entry.configure(validate='none')
+                self.alias_entry.configure(validate="none")
                 self.alias_var.set(default_alias)
-                self.alias_entry.configure(validate='key')
+                self.alias_entry.configure(validate="key")
 
     def browse_dir(self):
         path = filedialog.askdirectory()
         if path:
             # 标准化Windows路径格式
-            normalized_path = os.path.normpath(path).replace('/', '\\')
+            normalized_path = os.path.normpath(path).replace("/", "\\")
 
             # 检查是否是磁盘根目录
-            if normalized_path.endswith('\\') and len(normalized_path) == 3 and normalized_path[1:] == ':\\':
+            if (
+                normalized_path.endswith("\\")
+                and len(normalized_path) == 3
+                and normalized_path[1:] == ":\\"
+            ):
                 # 处理磁盘根目录
                 default_alias = f"disk_{normalized_path[0].upper()}"
             else:
@@ -699,16 +754,16 @@ class DirectoryDialog(ttk.Toplevel):
                     default_alias = chinese_to_pinyin(dir_name)
                     # 如果转换后为空，使用原名称的安全版本
                     if not default_alias:
-                        default_alias = re.sub(r'[^\w]', '', dir_name.lower())
+                        default_alias = re.sub(r"[^\w]", "", dir_name.lower())
                         if not default_alias or default_alias[0].isdigit():
-                            default_alias = 'dir_' + default_alias
+                            default_alias = "dir_" + default_alias
 
             # 设置路径和别名
             self.path_var.set(normalized_path)
             # 临时禁用验证，设置别名后重新启用
-            self.alias_entry.configure(validate='none')
+            self.alias_entry.configure(validate="none")
             self.alias_var.set(default_alias)
-            self.alias_entry.configure(validate='key')
+            self.alias_entry.configure(validate="key")
 
     def confirm(self):
         path = self.path_var.get()
@@ -722,7 +777,7 @@ class DirectoryDialog(ttk.Toplevel):
             return
 
         # 处理分区根目录
-        if path.endswith(':\\'):
+        if path.endswith(":\\"):
             drive_letter = path[0].lower()
             dir_name = f"drive_{drive_letter}"
         else:
@@ -731,14 +786,14 @@ class DirectoryDialog(ttk.Toplevel):
         # 如果是编辑现有目录，检查别名是否变化
         if self.dir_obj and self.dir_obj.alias != alias:
             # 在新的别名下设置时间戳
-            password_change_timestamps['directories'][alias] = time.time()
+            password_change_timestamps["directories"][alias] = time.time()
 
         self.result = ShareDirectory(
             self.path_var.get(),
             self.alias_var.get(),
             self.password_var.get(),
             self.desc_var.get(),
-            self.admin_password_var.get()  # 新增：包含目录管理密码
+            self.admin_password_var.get(),  # 新增：包含目录管理密码
         )
         self.result.name = dir_name  # 设置唯一标识名
         self.destroy()
@@ -753,7 +808,7 @@ class PageSettingsDialog(ttk.Toplevel):
         self.withdraw()  # 先隐藏窗口
         self.title("页面设置")
         self.geometry("500x400")
-        icon_path = get_path('static/favicon.ico')
+        icon_path = get_path("static/favicon.ico")
         self.iconbitmap(icon_path)
 
         self.result = None
@@ -772,7 +827,9 @@ class PageSettingsDialog(ttk.Toplevel):
         logo_name_frame.pack(fill=X, padx=10, pady=5)
         ttk.Label(logo_name_frame, text="Logo名称:").pack(side=LEFT)
         self.logo_name_var = tk.StringVar(value=config.logo_name)
-        self.logo_name_entry = ttk.Entry(logo_name_frame, textvariable=self.logo_name_var)
+        self.logo_name_entry = ttk.Entry(
+            logo_name_frame, textvariable=self.logo_name_var
+        )
         self.logo_name_entry.pack(side=LEFT, fill=X, expand=YES, padx=(10, 0))
         ToolTip(self.logo_name_entry, "设置左上角显示的Logo名称")
 
@@ -793,14 +850,18 @@ class PageSettingsDialog(ttk.Toplevel):
         preview_frame = ttk.Frame(logo_frame)
         preview_frame.pack(fill=X, pady=5)
         ttk.Label(preview_frame, text="预览:").pack(side=LEFT)
-        self.preview_label = ttk.Label(preview_frame, text="无图片", relief="sunken", width=20)
+        self.preview_label = ttk.Label(
+            preview_frame, text="无图片", relief="sunken", width=20
+        )
         self.preview_label.pack(side=LEFT, padx=(10, 0))
 
         # 提示信息
         info_frame = ttk.Frame(logo_frame)
         info_frame.pack(fill=X, pady=2)
         info_text = "支持本地图片文件和远程URL\n推荐尺寸: 高度30px，格式: PNG/JPG/GIF"
-        ttk.Label(info_frame, text=info_text, font=("宋体", 8), foreground="gray").pack(side=LEFT)
+        ttk.Label(info_frame, text=info_text, font=("宋体", 8), foreground="gray").pack(
+            side=LEFT
+        )
 
         # 确定取消按钮
         btn_frame = ttk.Frame(self)
@@ -828,7 +889,7 @@ class PageSettingsDialog(ttk.Toplevel):
         self.grab_set()
 
         # 绑定路径变化事件
-        self.logo_path_var.trace('w', self.update_preview)
+        self.logo_path_var.trace("w", self.update_preview)
         self.update_preview()
 
     def browse_logo(self):
@@ -838,12 +899,9 @@ class PageSettingsDialog(ttk.Toplevel):
             ("PNG文件", "*.png"),
             ("JPEG文件", "*.jpg *.jpeg"),
             ("GIF文件", "*.gif"),
-            ("所有文件", "*.*")
+            ("所有文件", "*.*"),
         ]
-        filename = filedialog.askopenfilename(
-            title="选择Logo图片",
-            filetypes=filetypes
-        )
+        filename = filedialog.askopenfilename(title="选择Logo图片", filetypes=filetypes)
         if filename:
             self.logo_path_var.set(filename)
 
@@ -863,7 +921,7 @@ class PageSettingsDialog(ttk.Toplevel):
                 photo = ImageTk.PhotoImage(image)
                 self.preview_label.configure(image=photo, text="")
                 self.preview_label.image = photo  # 保持引用
-            elif path.startswith(('http://', 'https://')):
+            elif path.startswith(("http://", "https://")):
                 self.preview_label.configure(text="远程图片", image="")
             else:
                 self.preview_label.configure(text="无效路径", image="")
@@ -893,6 +951,7 @@ class PageSettingsDialog(ttk.Toplevel):
                 # 本地文件，复制到static/logos目录
                 try:
                     import shutil
+
                     filename = os.path.basename(logo_path)
                     # 生成唯一文件名避免冲突
                     name, ext = os.path.splitext(filename)
@@ -909,7 +968,7 @@ class PageSettingsDialog(ttk.Toplevel):
                 except Exception as e:
                     tkmessagebox.showerror("错误", f"复制图片文件失败: {str(e)}")
                     return
-            elif logo_path.startswith(('http://', 'https://')):
+            elif logo_path.startswith(("http://", "https://")):
                 # 远程URL，直接使用，清理所有本地logo文件
                 final_logo_url = logo_path
                 cleanup_old_logos(config.logo_dir)
@@ -921,9 +980,9 @@ class PageSettingsDialog(ttk.Toplevel):
             cleanup_old_logos(config.logo_dir)
 
         self.result = {
-            'page_title': page_title,
-            'logo_name': logo_name,
-            'logo_image_url': final_logo_url
+            "page_title": page_title,
+            "logo_name": logo_name,
+            "logo_image_url": final_logo_url,
         }
         self.destroy()
 
@@ -952,7 +1011,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
             os.chdir(os.path.dirname(os.path.abspath(sys.executable)))
 
             # 确保日志目录存在并可写
-            log_dir = os.path.join(get_app_path(), 'logs')
+            log_dir = os.path.join(get_app_path(), "logs")
             os.makedirs(log_dir, exist_ok=True)
 
             # 初始化日志
@@ -960,6 +1019,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
             # 初始化SSL管理器
             from ssl_manager import SSLCertificateManager
+
             self.ssl_manager = SSLCertificateManager(config)
 
             self.logger.info("服务初始化完成")
@@ -979,7 +1039,9 @@ class FileShareService(win32serviceutil.ServiceFramework):
                     break
                 except Exception as e:
                     retry_count += 1
-                    self.logger.warning(f"配置加载失败,重试 {retry_count}/{max_retries}: {e}")
+                    self.logger.warning(
+                        f"配置加载失败,重试 {retry_count}/{max_retries}: {e}"
+                    )
                     time.sleep(1)
 
             if retry_count >= max_retries:
@@ -989,28 +1051,33 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 # 系统服务模式的服务器启动函数
                 # 根据配置选择Cheroot或Werkzeug
 
-                from concurrent.futures import ThreadPoolExecutor
                 import threading
+                from concurrent.futures import ThreadPoolExecutor
 
                 try:
                     if config.use_waitress:
                         # 使用Cheroot（高性能生产模式）
-                        from cheroot_server import create_cheroot_http_server, create_cheroot_https_server
+                        from cheroot_server import (
+                            create_cheroot_http_server,
+                            create_cheroot_https_server,
+                        )
 
                         # 创建HTTP服务器
                         http_server = create_cheroot_http_server(
                             flask_app,
-                            host='0.0.0.0',
+                            host="0.0.0.0",
                             port=config.port,
                             threads=get_optimal_threads(),
                             connection_limit=1000,
-                            channel_timeout=300
+                            channel_timeout=300,
                         )
 
                         # 保存服务器引用
                         self.http_servers.append(http_server)
-                        servers = [('HTTP', http_server)]
-                        flask_app.logger.info(f"Cheroot HTTP服务器已创建，端口: {config.port}")
+                        servers = [("HTTP", http_server)]
+                        flask_app.logger.info(
+                            f"Cheroot HTTP服务器已创建，端口: {config.port}"
+                        )
 
                         # 如果启用SSL，创建HTTPS服务器
                         if config.ssl_enabled:
@@ -1021,22 +1088,28 @@ class FileShareService(win32serviceutil.ServiceFramework):
                                     try:
                                         https_server = create_cheroot_https_server(
                                             flask_app,
-                                            host='0.0.0.0',
+                                            host="0.0.0.0",
                                             port=config.ssl_port,
                                             cert_file=cert_path,
                                             key_file=key_path,
                                             threads=get_optimal_threads(),
                                             connection_limit=1000,
-                                            channel_timeout=300
+                                            channel_timeout=300,
                                         )
                                         # 保存服务器引用
                                         self.https_servers.append(https_server)
-                                        servers.append(('HTTPS', https_server))
-                                        flask_app.logger.info(f"Cheroot HTTPS服务器已创建，端口: {config.ssl_port}")
+                                        servers.append(("HTTPS", https_server))
+                                        flask_app.logger.info(
+                                            f"Cheroot HTTPS服务器已创建，端口: {config.ssl_port}"
+                                        )
                                     except Exception as e:
-                                        flask_app.logger.error(f"Cheroot HTTPS服务器创建失败: {e}")
+                                        flask_app.logger.error(
+                                            f"Cheroot HTTPS服务器创建失败: {e}"
+                                        )
                                 else:
-                                    flask_app.logger.warning("SSL已启用但证书文件路径无效")
+                                    flask_app.logger.warning(
+                                        "SSL已启用但证书文件路径无效"
+                                    )
                             else:
                                 flask_app.logger.warning("SSL已启用但没有有效证书")
 
@@ -1053,7 +1126,9 @@ class FileShareService(win32serviceutil.ServiceFramework):
                             try:
                                 future.result()
                             except Exception as e:
-                                flask_app.logger.error(f"Cheroot {server_type}服务器错误: {e}")
+                                flask_app.logger.error(
+                                    f"Cheroot {server_type}服务器错误: {e}"
+                                )
 
                     else:
                         # 使用Werkzeug（调试模式）
@@ -1062,10 +1137,12 @@ class FileShareService(win32serviceutil.ServiceFramework):
                         servers = []
 
                         # 创建HTTP服务器
-                        http_server = make_server('0.0.0.0', config.port, flask_app)
+                        http_server = make_server("0.0.0.0", config.port, flask_app)
                         self.http_servers.append(http_server)
-                        servers.append(('HTTP', http_server, config.port))
-                        flask_app.logger.info(f"Werkzeug HTTP服务器已创建，端口: {config.port}")
+                        servers.append(("HTTP", http_server, config.port))
+                        flask_app.logger.info(
+                            f"Werkzeug HTTP服务器已创建，端口: {config.port}"
+                        )
 
                         # 如果启用SSL，创建HTTPS服务器
                         if config.ssl_enabled:
@@ -1075,19 +1152,35 @@ class FileShareService(win32serviceutil.ServiceFramework):
                                 if cert_path and key_path:
                                     try:
                                         import ssl
-                                        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+                                        ssl_context = ssl.SSLContext(
+                                            ssl.PROTOCOL_TLS_SERVER
+                                        )
                                         ssl_context.load_cert_chain(cert_path, key_path)
                                         ssl_context.check_hostname = False
                                         ssl_context.verify_mode = ssl.CERT_NONE
 
-                                        https_server = make_server('0.0.0.0', config.ssl_port, flask_app, ssl_context=ssl_context)
+                                        https_server = make_server(
+                                            "0.0.0.0",
+                                            config.ssl_port,
+                                            flask_app,
+                                            ssl_context=ssl_context,
+                                        )
                                         self.https_servers.append(https_server)
-                                        servers.append(('HTTPS', https_server, config.ssl_port))
-                                        flask_app.logger.info(f"Werkzeug HTTPS服务器已创建，端口: {config.ssl_port}")
+                                        servers.append(
+                                            ("HTTPS", https_server, config.ssl_port)
+                                        )
+                                        flask_app.logger.info(
+                                            f"Werkzeug HTTPS服务器已创建，端口: {config.ssl_port}"
+                                        )
                                     except Exception as e:
-                                        flask_app.logger.error(f"Werkzeug HTTPS服务器创建失败: {e}")
+                                        flask_app.logger.error(
+                                            f"Werkzeug HTTPS服务器创建失败: {e}"
+                                        )
                                 else:
-                                    flask_app.logger.warning("SSL已启用但证书文件路径无效")
+                                    flask_app.logger.warning(
+                                        "SSL已启用但证书文件路径无效"
+                                    )
                             else:
                                 flask_app.logger.warning("SSL已启用但没有有效证书")
 
@@ -1097,14 +1190,18 @@ class FileShareService(win32serviceutil.ServiceFramework):
                         for server_type, server, port in servers:
                             future = self.executor.submit(server.serve_forever)
                             futures.append((server_type, future, port))
-                            flask_app.logger.info(f"Werkzeug {server_type}服务器已启动，端口: {port}")
+                            flask_app.logger.info(
+                                f"Werkzeug {server_type}服务器已启动，端口: {port}"
+                            )
 
                         # 等待所有服务器
                         for server_type, future, port in futures:
                             try:
                                 future.result()
                             except Exception as e:
-                                flask_app.logger.error(f"Werkzeug {server_type}服务器错误: {e}")
+                                flask_app.logger.error(
+                                    f"Werkzeug {server_type}服务器错误: {e}"
+                                )
 
                 except Exception as e:
                     flask_app.logger.error(f"服务器启动失败: {e}")
@@ -1143,11 +1240,11 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.logger.info("尝试优雅停止服务器...")
             for server in self.http_servers:
                 try:
-                    if hasattr(server, 'stop'):
+                    if hasattr(server, "stop"):
                         # Cheroot服务器
                         server.stop()
                         self.logger.info("HTTP服务器已停止")
-                    elif hasattr(server, 'shutdown'):
+                    elif hasattr(server, "shutdown"):
                         # Werkzeug服务器
                         server.shutdown()
                         self.logger.info("HTTP服务器已停止")
@@ -1157,11 +1254,11 @@ class FileShareService(win32serviceutil.ServiceFramework):
             # 2. 优雅停止所有HTTPS服务器
             for server in self.https_servers:
                 try:
-                    if hasattr(server, 'stop'):
+                    if hasattr(server, "stop"):
                         # Cheroot服务器
                         server.stop()
                         self.logger.info("HTTPS服务器已停止")
-                    elif hasattr(server, 'shutdown'):
+                    elif hasattr(server, "shutdown"):
                         # Werkzeug服务器
                         server.shutdown()
                         self.logger.info("HTTPS服务器已停止")
@@ -1170,6 +1267,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
             # 3. 等待一段时间让连接自然结束
             import time
+
             self.logger.info("等待活跃连接结束...")
             time.sleep(3)
 
@@ -1190,9 +1288,12 @@ class FileShareService(win32serviceutil.ServiceFramework):
                     # 强制终止线程（注意：这是不安全的，但在服务停止时是必要的）
                     try:
                         import ctypes
+
                         thread_id = self.server_thread.ident
                         if thread_id:
-                            ctypes.windll.kernel32.TerminateThread(ctypes.c_ulong(thread_id), 0)
+                            ctypes.windll.kernel32.TerminateThread(
+                                ctypes.c_ulong(thread_id), 0
+                            )
                             self.logger.info("服务器线程已强制终止")
                     except Exception as e:
                         self.logger.error(f"强制终止线程失败: {e}")
@@ -1203,7 +1304,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self._force_close_ports()
 
             # 7. 停止SSL证书监控
-            if hasattr(self, 'ssl_manager'):
+            if hasattr(self, "ssl_manager"):
                 self.ssl_manager.stop_certificate_monitor()
                 self.logger.info("系统服务SSL证书监控已停止")
 
@@ -1224,6 +1325,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
         """强制关闭服务使用的端口"""
         try:
             import subprocess
+
             ports_to_close = [config.port]
             if config.ssl_enabled:
                 ports_to_close.append(config.ssl_port)
@@ -1232,19 +1334,19 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 try:
                     # 查找占用端口的进程
                     result = subprocess.run(
-                        ['netstat', '-ano', '|', 'findstr', f':{port}'],
+                        ["netstat", "-ano", "|", "findstr", f":{port}"],
                         shell=True,
                         capture_output=True,
                         text=True,
-                        timeout=5
+                        timeout=5,
                     )
 
                     if result.stdout:
-                        lines = result.stdout.strip().split('\n')
+                        lines = result.stdout.strip().split("\n")
                         pids = set()
                         for line in lines:
                             parts = line.split()
-                            if len(parts) >= 5 and f':{port}' in parts[1]:
+                            if len(parts) >= 5 and f":{port}" in parts[1]:
                                 pid = parts[-1]
                                 if pid.isdigit():
                                     pids.add(pid)
@@ -1252,9 +1354,14 @@ class FileShareService(win32serviceutil.ServiceFramework):
                         # 终止占用端口的进程
                         for pid in pids:
                             try:
-                                subprocess.run(['taskkill', '/F', '/PID', pid],
-                                             capture_output=True, timeout=5)
-                                self.logger.info(f"已强制终止占用端口{port}的进程PID:{pid}")
+                                subprocess.run(
+                                    ["taskkill", "/F", "/PID", pid],
+                                    capture_output=True,
+                                    timeout=5,
+                                )
+                                self.logger.info(
+                                    f"已强制终止占用端口{port}的进程PID:{pid}"
+                                )
                             except Exception as e:
                                 self.logger.error(f"终止进程PID:{pid}失败: {e}")
 
@@ -1270,7 +1377,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.logger.info(f"自动添加防火墙放行规则:  {rule_name}")
             commands = [
                 f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=allow protocol=TCP localport={port}',
-                f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=allow protocol=TCP localport={port}'
+                f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=allow protocol=TCP localport={port}',
             ]
 
             for cmd in commands:
@@ -1280,10 +1387,12 @@ class FileShareService(win32serviceutil.ServiceFramework):
                     check=True,
                     capture_output=True,
                     text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 if result.stderr is None:
-                    self.logger.info(f"自动处理防火墙放行规则{rule_name}命令,处理结果：{result.stdout} \n错误: {result.stderr}")
+                    self.logger.info(
+                        f"自动处理防火墙放行规则{rule_name}命令,处理结果：{result.stdout} \n错误: {result.stderr}"
+                    )
 
         except Exception as e:
             self.logger.info(f"自动添加防火墙放行规则{rule_name},错误: {str(e)}")
@@ -1299,7 +1408,7 @@ class FileShareApp:
             if os.path.exists(normalized_path) and os.access(normalized_path, os.R_OK):
                 if os.path.isdir(normalized_path):
                     # 处理分区根目录
-                    if normalized_path.endswith(':\\'):
+                    if normalized_path.endswith(":\\"):
                         # 使用驱动器字母作为唯一标识
                         drive_letter = normalized_path[0].lower()
                         dir_name = f"drive_{drive_letter}"
@@ -1310,17 +1419,17 @@ class FileShareApp:
                         default_alias = chinese_to_pinyin(dir_name)
                         # 如果转换后为空，使用原名称的安全版本
                         if not default_alias:
-                            default_alias = re.sub(r'[^\w]', '', dir_name.lower())
+                            default_alias = re.sub(r"[^\w]", "", dir_name.lower())
                             if not default_alias or default_alias[0].isdigit():
-                                default_alias = 'dir_' + default_alias
+                                default_alias = "dir_" + default_alias
 
                     dialog = DirectoryDialog(self.root)
                     dialog.path_var.set(normalized_path)
                     # 设置默认别名，使用和browse_dir相同的逻辑
                     # 临时禁用验证，设置别名后重新启用
-                    dialog.alias_entry.configure(validate='none')
+                    dialog.alias_entry.configure(validate="none")
                     dialog.alias_var.set(default_alias)
-                    dialog.alias_entry.configure(validate='key')
+                    dialog.alias_entry.configure(validate="key")
 
                     self.root.wait_window(dialog)
                     if dialog.result:
@@ -1328,7 +1437,9 @@ class FileShareApp:
                         config.shared_dirs[dir_name] = dialog.result
                         self.refresh_dir_list()
                         self.save_config()
-                        self.log_area.insert(END, f"已添加共享目录: {normalized_path}\n")
+                        self.log_area.insert(
+                            END, f"已添加共享目录: {normalized_path}\n"
+                        )
                         self.log_area.see(END)
                 else:
                     self.log_area.insert(END, "只能添加文件夹!\n")
@@ -1343,6 +1454,7 @@ class FileShareApp:
 
         # 初始化SSL管理器
         from ssl_manager import SSLCertificateManager
+
         self.ssl_manager = SSLCertificateManager(config)
 
         # 后台服务模式下时钟变量
@@ -1414,10 +1526,10 @@ class FileShareApp:
         # 设置主题
         if config.dark_theme:
             self.style.theme_use("darkly")
-            self.theme_switch.state(['selected'])
+            self.theme_switch.state(["selected"])
         else:
             self.style.theme_use("cosmo")
-            self.theme_switch.state(['!selected'])
+            self.theme_switch.state(["!selected"])
 
         # 设置日志
         self.log_enabled.set(config.log_to_file)
@@ -1427,16 +1539,16 @@ class FileShareApp:
         # 设置服务器类型
         self.server_type.set(config.use_waitress)
         if config.use_waitress:
-            self.server_switch.state(['selected'])
+            self.server_switch.state(["selected"])
             self.waitress_label.configure(style="success.TLabel")
         else:
-            self.server_switch.state(['!selected'])
+            self.server_switch.state(["!selected"])
             self.werkzeug_label.configure(style="success.TLabel")
 
     def setup_dnd(self):
         try:
             self.root.drop_target_register(DND_FILES)
-            self.root.dnd_bind('<<Drop>>', self.handle_drop)
+            self.root.dnd_bind("<<Drop>>", self.handle_drop)
             print("Main window DND registered successfully")
         except Exception as e:
             print("DND registration error:", e)
@@ -1445,7 +1557,7 @@ class FileShareApp:
         self.root.withdraw()
         self.root.update_idletasks()
         self.root.deiconify()
-        self.root.protocol('WM_DELETE_WINDOW', self.on_closing)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     # 以下是创建各个部分的方法
     def create_theme_section(self):
@@ -1459,20 +1571,12 @@ class FileShareApp:
             bootstyle="round-toggle",
             text="",
             command=self.toggle_theme,
-            padding=2
+            padding=2,
         )
 
         # 添加主题切换图标标签
-        self.light_icon = ttk.Label(
-            theme_frame,
-            text="☀",
-            font=("Segoe UI", 10)
-        )
-        self.dark_icon = ttk.Label(
-            theme_frame,
-            text="☾",
-            font=("Segoe UI", 10)
-        )
+        self.light_icon = ttk.Label(theme_frame, text="☀", font=("Segoe UI", 10))
+        self.dark_icon = ttk.Label(theme_frame, text="☾", font=("Segoe UI", 10))
 
         # SSL设置按钮
         self.ssl_settings_btn = ttk.Button(
@@ -1480,7 +1584,7 @@ class FileShareApp:
             text="🔒 SSL设置",
             command=self.open_ssl_settings,
             style="secondary.TButton",
-            width=10
+            width=10,
         )
         self.ssl_settings_btn.pack(side=LEFT, padx=(0, 10))
 
@@ -1503,7 +1607,7 @@ class FileShareApp:
             btn_frame,
             text="添加目录",
             command=self.add_directory,
-            style="primary.TButton"
+            style="primary.TButton",
         ).pack(side=LEFT, padx=5)
 
         # 修改目录按钮
@@ -1511,7 +1615,7 @@ class FileShareApp:
             btn_frame,
             text="修改目录",
             command=lambda: self.edit_directory(None),
-            style="info.TButton"
+            style="info.TButton",
         ).pack(side=LEFT, padx=5)
 
         # 删除目录按钮
@@ -1519,14 +1623,14 @@ class FileShareApp:
             btn_frame,
             text="删除目录",
             command=self.remove_directory,
-            style="danger.TButton"
+            style="danger.TButton",
         ).pack(side=LEFT, padx=5)
 
         ttk.Button(
             btn_frame,
             text="私有分享",
             command=self.open_share_manager,
-            style="info.TButton"
+            style="info.TButton",
         ).pack(side=LEFT, padx=5)
 
         # 创建带滚动条的列表框架
@@ -1543,7 +1647,7 @@ class FileShareApp:
             columns=("alias", "path", "has_password"),
             show="headings",
             height=6,
-            yscrollcommand=scrollbar.set
+            yscrollcommand=scrollbar.set,
         )
 
         # 配置滚动条
@@ -1568,6 +1672,7 @@ class FileShareApp:
 
     def open_share_manager(self):
         from share_manager_ui.share_dialog import ShareManagerDialog
+
         dialog = ShareManagerDialog(self.root, self.style)
         self.root.wait_window(dialog)
 
@@ -1594,7 +1699,7 @@ class FileShareApp:
             admin_pwd_entry_container,
             textvariable=self.admin_password_var,
             show="*",
-            width=15
+            width=15,
         )
         admin_pwd_entry.pack(side=LEFT, fill=X, expand=YES)
         ToolTip(admin_pwd_entry, "管理密码，一码通用，WEB页提示输入密码的地方用它都行")
@@ -1603,7 +1708,9 @@ class FileShareApp:
             admin_pwd_entry_container,
             text="○",
             width=1,
-            command=lambda: self.toggle_password_visibility(admin_pwd_entry, admin_pwd_btn)
+            command=lambda: self.toggle_password_visibility(
+                admin_pwd_entry, admin_pwd_btn
+            ),
         )
         admin_pwd_btn.pack(side=LEFT)
         ToolTip(admin_pwd_btn, "显隐密码")
@@ -1619,10 +1726,7 @@ class FileShareApp:
 
         # 全局密码输入框和显隐按钮
         pwd_entry = ttk.Entry(
-            pwd_entry_container,
-            textvariable=self.password_var,
-            show="*",
-            width=15
+            pwd_entry_container, textvariable=self.password_var, show="*", width=15
         )
         pwd_entry.pack(side=LEFT, fill=X, expand=YES)
         ToolTip(pwd_entry, "全局密码也就是进入WEB页面首页用的密码")
@@ -1631,7 +1735,7 @@ class FileShareApp:
             pwd_entry_container,
             text="○",
             width=1,
-            command=lambda: self.toggle_password_visibility(pwd_entry, pwd_btn)
+            command=lambda: self.toggle_password_visibility(pwd_entry, pwd_btn),
         )
         pwd_btn.pack(side=LEFT)
         ToolTip(pwd_btn, "显隐密码")
@@ -1640,9 +1744,14 @@ class FileShareApp:
         port_frame = ttk.Frame(settings_container)
         port_frame.pack(side=LEFT, padx=5, fill=X, expand=YES)
         ttk.Label(port_frame, text="端口号:").pack(side=LEFT)
-        ttk.Entry(port_frame, textvariable=self.port_var).pack(side=LEFT, fill=X, expand=YES)
-        ToolTip(port_frame, f"HTTP服务监听端口号也就是用户WEB访问端口号\n\n "
-                            f"如：http://{get_local_ip()}:{self.port_var.get()}")
+        ttk.Entry(port_frame, textvariable=self.port_var).pack(
+            side=LEFT, fill=X, expand=YES
+        )
+        ToolTip(
+            port_frame,
+            f"HTTP服务监听端口号也就是用户WEB访问端口号\n\n "
+            f"如：http://{get_local_ip()}:{self.port_var.get()}",
+        )
 
         # 开关框架
         log_switch_frame = ttk.Frame(settings_frame)
@@ -1650,30 +1759,41 @@ class FileShareApp:
 
         # 添加清理间隔设置
         ttk.Label(log_switch_frame, text="清理间隔(秒):").pack(side=tk.LEFT)
-        ttk.Spinbox(log_switch_frame, from_=10, to=86400, textvariable=self.cleanup_time_var, width=3).pack(
-            side=tk.LEFT)
+        ttk.Spinbox(
+            log_switch_frame,
+            from_=10,
+            to=86400,
+            textvariable=self.cleanup_time_var,
+            width=3,
+        ).pack(side=tk.LEFT)
 
         # 添加自动清理复选框
         self.auto_cleanup_checkbox = ttk.Checkbutton(
             log_switch_frame,
             text="自动清理",
             variable=self.auto_cleanup_var,
-            style="squared-toggle"
+            style="squared-toggle",
         )
         self.auto_cleanup_checkbox.pack(side=tk.LEFT, padx=5)
 
         # 添加工具提示
-        ToolTip(self.auto_cleanup_checkbox, "启用此选项将自动清理用户打包下载产生临时文件和过期的共享链接。")
+        ToolTip(
+            self.auto_cleanup_checkbox,
+            "启用此选项将自动清理用户打包下载产生临时文件和过期的共享链接。",
+        )
 
         # 保存按钮
         self.save_btn = ttk.Button(
             log_switch_frame,
             text="保存(实时)",
             command=self.save_config,
-            style="outline.TButton"
+            style="outline.TButton",
         )
         self.save_btn.pack(side=RIGHT, padx=(0, 15))
-        ToolTip(self.save_btn, "虽然它能保存所有配置，\n但其实这里主要用于管理密码与全局密码的一个实时生效")
+        ToolTip(
+            self.save_btn,
+            "虽然它能保存所有配置，\n但其实这里主要用于管理密码与全局密码的一个实时生效",
+        )
 
         # 日志开关
         self.log_switch = ttk.Checkbutton(
@@ -1681,7 +1801,7 @@ class FileShareApp:
             text="开启记录日志",
             variable=self.log_enabled,
             command=self.toggle_file_logging,
-            style="squared-toggle"  # round-toggle
+            style="squared-toggle",  # round-toggle
         )
         self.log_switch.pack(side=RIGHT, padx=(0, 15))
         ToolTip(self.log_switch, "启用此选项将自动将下面回显框日志记录到程序logs下面。")
@@ -1695,10 +1815,13 @@ class FileShareApp:
             text="",
             variable=self.server_type,
             command=self.toggle_server_type,
-            style="squared-toggle"
+            style="squared-toggle",
         )
         self.server_switch.pack(side=RIGHT, padx=(0, 2))
-        ToolTip(self.server_switch, "切换werkzeug开发调试用单线程服务器\n或Cheroot生产环境适应多线程服务器")
+        ToolTip(
+            self.server_switch,
+            "切换werkzeug开发调试用单线程服务器\n或Cheroot生产环境适应多线程服务器",
+        )
 
         self.werkzeug_label = ttk.Label(log_switch_frame, text="werkzeug")
         self.werkzeug_label.pack(side=RIGHT, padx=(0, 2))
@@ -1708,11 +1831,11 @@ class FileShareApp:
 
     # 添加切换密码显示的方法
     def toggle_password_visibility(self, entry, btn):
-        if entry.cget('show') == '*':
-            entry.configure(show='')
+        if entry.cget("show") == "*":
+            entry.configure(show="")
             btn.configure(text="●")
         else:
-            entry.configure(show='*')
+            entry.configure(show="*")
             btn.configure(text="○")
 
     def create_buttons_section(self):
@@ -1726,25 +1849,25 @@ class FileShareApp:
             text="安装为系统服务",
             variable=self.service_var,
             command=self.handle_service_toggle,
-            style="squared-toggle"
+            style="squared-toggle",
         )
         self.service_checkbox.pack(side=LEFT, pady=10, padx=(0, 10))
-        ToolTip(self.service_checkbox, "将程序安装成WINDOWS系统服务，实现开机运行，记得先调试好配置")
+        ToolTip(
+            self.service_checkbox,
+            "将程序安装成WINDOWS系统服务，实现开机运行，记得先调试好配置",
+        )
 
         self.start_btn = ttk.Button(
             btn_frame,
             text="启动服务" if not self.service_var.get() else "启动后台服务",
             command=self.toggle_server,
-            style="success.TButton"
+            style="success.TButton",
         )
         self.start_btn.pack(side=LEFT, pady=10)
 
         # "打开页面"按钮
         self.page_btn = ttk.Button(
-            btn_frame,
-            text="打开页面",
-            command=self.open_page,
-            style="info.TButton"
+            btn_frame, text="打开页面", command=self.open_page, style="info.TButton"
         )
         self.page_btn.pack(side=LEFT, pady=10)
         self.page_btn.pack_forget()  # 初始不显示
@@ -1754,7 +1877,7 @@ class FileShareApp:
             btn_frame,
             text="页面设置",
             command=self.open_page_settings,
-            style="secondary.TButton"
+            style="secondary.TButton",
         )
         self.page_settings_btn.pack(side=LEFT, pady=10, padx=(10, 0))
 
@@ -1766,14 +1889,18 @@ class FileShareApp:
             height=20,
             width=80,
             wrap=tk.WORD,
-            font=('Consolas', 10)
+            font=("Consolas", 10),
         )
         self.log_area.pack(fill=BOTH, expand=YES, pady=5)
 
         # 设置日志处理（确保只添加一次）
-        if not hasattr(self, '_log_handler_added'):  # 检查是否已经添加过处理器
+        if not hasattr(self, "_log_handler_added"):  # 检查是否已经添加过处理器
             handler = RedirectHandler(self.log_area)
-            self.logger.add(handler, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO")
+            self.logger.add(
+                handler,
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+                level="INFO",
+            )
             self._log_handler_added = True  # 标记为已添加
 
     def switch_server_type_ui(self, is_running):
@@ -1788,15 +1915,14 @@ class FileShareApp:
             if self.server_type.get():
                 self.server_mode_label.configure(
                     text="服务模式：Cheroot(生产)",
-                    bootstyle="success"  # 绿色
+                    bootstyle="success",  # 绿色
                 )
             else:
                 self.server_mode_label.configure(
                     text="服务模式：werkzeug(调试)",
-                    bootstyle="warning"  # 橙色
+                    bootstyle="warning",  # 橙色
                 )
             self.server_mode_label.pack(side=RIGHT, padx=(0, 15))
-
 
         else:
             # 隐藏模式标签
@@ -1820,17 +1946,17 @@ class FileShareApp:
 
     def setup_file_logging(self):
         """设置文件日志记录"""
-        if not os.path.exists('logs'):
-            os.makedirs('logs')
+        if not os.path.exists("logs"):
+            os.makedirs("logs")
 
         # 添加文件日志处理器
-        log_file = f'logs/window_{datetime.now().strftime("%Y%m%d")}.log'
+        log_file = f"logs/window_{datetime.now().strftime('%Y%m%d')}.log"
         self.logger.add(
             log_file,
             rotation="00:00",  # 每天午夜轮换
             retention="15 days",  # 保留最近15天的日志
             format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
-            level="INFO"
+            level="INFO",
         )
 
     def disable_file_logging(self):
@@ -1839,9 +1965,13 @@ class FileShareApp:
         self.logger.remove()  # 移除所有处理器
 
         # 重新添加GUI日志处理器
-        if hasattr(self, '_log_handler_added') and self._log_handler_added:
+        if hasattr(self, "_log_handler_added") and self._log_handler_added:
             handler = RedirectHandler(self.log_area)
-            self.logger.add(handler, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO")
+            self.logger.add(
+                handler,
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+                level="INFO",
+            )
 
     def setup_traces(self):
         # 监听变量变化
@@ -1868,22 +1998,26 @@ class FileShareApp:
             webbrowser.open(serverUrl)
 
     def create_tray_icon(self):
-        icon_image = Image.open(get_path('static/favicon.ico'))
+        icon_image = Image.open(get_path("static/favicon.ico"))
         menu = (
             # pystray.MenuItem('显示', self.show_window),
-            pystray.MenuItem('显示', lambda: self.root.after(0, self.show_window), default=True),
+            pystray.MenuItem(
+                "显示", lambda: self.root.after(0, self.show_window), default=True
+            ),
             # 绑定显示窗口为默认事件，这样实现鼠标点击图标显示窗口比绑定on_click成功率高
-            pystray.MenuItem('关于', self.about_app),
-            pystray.MenuItem('退出', self.quit_app)
+            pystray.MenuItem("关于", self.about_app),
+            pystray.MenuItem("退出", self.quit_app),
         )
-        self.tray_icon = pystray.Icon('file_share', icon_image, '文件分享服务器(letvar@qq.com)', menu)
+        self.tray_icon = pystray.Icon(
+            "file_share", icon_image, "文件分享服务器(letvar@qq.com)", menu
+        )
 
     def show_window(self, icon=None):
         # 检查窗口是否已经显示，如果没有显示，则执行以下操作
         if not self.root.winfo_ismapped():
             self.root.deiconify()  # 取消窗口的图标化
         # 无论窗口是否可见，都将其状态设置为正常并提升到顶层，确保获得焦点
-        self.root.state('normal')  # 将窗口状态设置为正常
+        self.root.state("normal")  # 将窗口状态设置为正常
         self.root.lift()  # 将窗口提升到顶层
         self.root.focus_force()  # 强制窗口获得焦点
 
@@ -1899,7 +2033,7 @@ class FileShareApp:
         self.about_window = ttk.Toplevel(self.root)
         self.about_window.transient(self.root)
         self.about_window.title("关于")
-        self.about_window.iconbitmap(get_path('static/favicon.ico'))
+        self.about_window.iconbitmap(get_path("static/favicon.ico"))
         self.about_window.resizable(False, False)
 
         # 设置窗口大小和位置
@@ -1911,7 +2045,7 @@ class FileShareApp:
 
         # 创建内容框架
         content_frame = ttk.Frame(self.about_window)
-        content_frame.pack(expand=True, fill='both', padx=20, pady=20)
+        content_frame.pack(expand=True, fill="both", padx=20, pady=20)
 
         # 加载图片
         try:
@@ -1923,7 +2057,7 @@ class FileShareApp:
             image_label.image = img_tk  # 保持引用
             image_label.pack(pady=(0, 5))
         except Exception as e:
-            flask_app.logger.error(f"加载图片失败: {e}", color='red')
+            flask_app.logger.error(f"加载图片失败: {e}", color="red")
 
         # 添加文字信息
         info_text = """
@@ -1937,7 +2071,7 @@ class FileShareApp:
     反馈: letvar@qq.com（秒回）
 
     """
-        ttk.Label(content_frame, text=info_text, justify='left').pack()
+        ttk.Label(content_frame, text=info_text, justify="left").pack()
 
         # 添加关闭按钮
         # ttk.Button(content_frame, text="关闭", command=close_about_window).pack(pady=(10, 0))
@@ -1958,7 +2092,7 @@ class FileShareApp:
         self.root.after(0, self.root.quit)
 
     def minimize_to_tray(self):
-        if not hasattr(self, 'tray_icon') or not self.tray_icon.visible:
+        if not hasattr(self, "tray_icon") or not self.tray_icon.visible:
             self.create_tray_icon()
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
@@ -2004,7 +2138,9 @@ class FileShareApp:
                     self.ssl_manager.stop_certificate_monitor()
 
             # 传递回调函数给对话框
-            dialog = SSLSettingsDialog(self.root, config, self.ssl_manager, update_main_window)
+            dialog = SSLSettingsDialog(
+                self.root, config, self.ssl_manager, update_main_window
+            )
             self.root.wait_window(dialog)
 
             if dialog.result:
@@ -2017,14 +2153,20 @@ class FileShareApp:
     def update_ssl_status(self):
         """更新SSL状态显示"""
         try:
-            if hasattr(self, 'ssl_settings_btn'):
+            if hasattr(self, "ssl_settings_btn"):
                 if config.ssl_enabled:
                     if self.ssl_manager.has_valid_certificate():
-                        self.ssl_settings_btn.configure(text="🔒 SSL已启用", style="success.TButton")
+                        self.ssl_settings_btn.configure(
+                            text="🔒 SSL已启用", style="success.TButton"
+                        )
                     else:
-                        self.ssl_settings_btn.configure(text="🔒 SSL配置中", style="warning.TButton")
+                        self.ssl_settings_btn.configure(
+                            text="🔒 SSL配置中", style="warning.TButton"
+                        )
                 else:
-                    self.ssl_settings_btn.configure(text="🔒 SSL设置", style="secondary.TButton")
+                    self.ssl_settings_btn.configure(
+                        text="🔒 SSL设置", style="secondary.TButton"
+                    )
         except Exception as e:
             self.logger.error(f"更新SSL状态显示时发生错误: {e}")
 
@@ -2048,12 +2190,12 @@ class FileShareApp:
     def save_config(self):
         # 检查全局密码是否变化
         if config.global_password != self.password_var.get():
-            password_change_timestamps['global'] = time.time()
+            password_change_timestamps["global"] = time.time()
 
         # 只有当新的管理员密码非空时才进行修改
         new_admin_password = self.admin_password_var.get()
         if new_admin_password and config.admin_password != new_admin_password:
-            password_change_timestamps['admin'] = time.time()
+            password_change_timestamps["admin"] = time.time()
             config.admin_password = new_admin_password
 
         config.global_password = self.password_var.get()
@@ -2087,11 +2229,15 @@ class FileShareApp:
 
         # 插入数据
         for dir_obj in config.shared_dirs.values():
-            self.dir_list.insert("", "end", values=(
-                dir_obj.alias,
-                dir_obj.path,
-                "是" if dir_obj.password else "否"
-            ))
+            self.dir_list.insert(
+                "",
+                "end",
+                values=(
+                    dir_obj.alias,
+                    dir_obj.path,
+                    "是" if dir_obj.password else "否",
+                ),
+            )
 
     def add_directory(self):
         dialog = DirectoryDialog(self.root)
@@ -2100,7 +2246,7 @@ class FileShareApp:
         if dialog.result:
             path = dialog.result.path
             # 确保路径格式正确
-            if path.endswith(':\\'):
+            if path.endswith(":\\"):
                 drive_letter = path[0].lower()
                 dir_name = f"drive_{drive_letter}"
             else:
@@ -2116,11 +2262,11 @@ class FileShareApp:
             return
 
         item = self.dir_list.item(selected[0])
-        alias = item['values'][0]  # 获取别名
-        path = item['values'][1]  # 获取路径
+        alias = item["values"][0]  # 获取别名
+        path = item["values"][1]  # 获取路径
 
         # 生成目录标识名
-        if path.endswith(':\\'):
+        if path.endswith(":\\"):
             dir_name = f"drive_{path[0].lower()}"
         else:
             dir_name = os.path.basename(path)
@@ -2137,11 +2283,11 @@ class FileShareApp:
             return
 
         item = self.dir_list.item(selected[0])
-        alias = item['values'][0]  # 获取别名
-        path = item['values'][1]  # 获取路径
+        alias = item["values"][0]  # 获取别名
+        path = item["values"][1]  # 获取路径
 
         # 生成目录标识名
-        if path.endswith(':\\'):
+        if path.endswith(":\\"):
             dir_name = f"drive_{path[0].lower()}"
         else:
             dir_name = os.path.basename(path)
@@ -2153,10 +2299,15 @@ class FileShareApp:
             if dialog.result:
                 # 检查密码是否变化
                 if old_password != dialog.result.password:
-                    password_change_timestamps['directories'][dialog.result.alias] = time.time()
+                    password_change_timestamps["directories"][dialog.result.alias] = (
+                        time.time()
+                    )
                 # 使用相同的目录标识名逻辑
-                new_dir_name = f"drive_{dialog.result.path[0].lower()}" if dialog.result.path.endswith(
-                    ':\\') else os.path.basename(dialog.result.path)
+                new_dir_name = (
+                    f"drive_{dialog.result.path[0].lower()}"
+                    if dialog.result.path.endswith(":\\")
+                    else os.path.basename(dialog.result.path)
+                )
 
                 # 删除旧配置并添加新配置
                 del config.shared_dirs[dir_name]
@@ -2175,24 +2326,38 @@ class FileShareApp:
         def check_service_status():
             try:
                 import win32serviceutil
+
                 try:
-                    self.service_status = win32serviceutil.QueryServiceStatus('FileShareService')[1]
+                    self.service_status = win32serviceutil.QueryServiceStatus(
+                        "FileShareService"
+                    )[1]
                 except:
                     self.service_status = None
 
                 # 根据后台服务状态更新按钮
                 if self.service_status == 4:  # 运行状态码
                     self.back_server_running = True
-                    self.start_btn.configure(text="停止后台服务", style="danger.TButton")
+                    self.start_btn.configure(
+                        text="停止后台服务", style="danger.TButton"
+                    )
                     self.service_checkbox.configure(state="disabled")
                     if not self.page_btn.winfo_ismapped():
                         self.page_btn.pack(side=LEFT, pady=10, padx=(0, 10))
                     # 同步显示后台服务日志
                     sync_service_logs(self)
                 else:
-                    button_text = "启动后台服务" if self.service_status is not None else \
-                        "启动服务" if not self.server_running else "停止服务"
-                    button_style = "success.TButton" if not self.server_running else "danger.TButton"
+                    button_text = (
+                        "启动后台服务"
+                        if self.service_status is not None
+                        else "启动服务"
+                        if not self.server_running
+                        else "停止服务"
+                    )
+                    button_style = (
+                        "success.TButton"
+                        if not self.server_running
+                        else "danger.TButton"
+                    )
                     checkbox_state = "normal"
 
                     # 更新 UI
@@ -2212,20 +2377,22 @@ class FileShareApp:
             if not self.back_server_running:
                 return
             try:
-                current_date = datetime.now().strftime('%Y%m%d')
-                log_file = os.path.join(get_app_path(), 'logs', f'service_{current_date}.log')
+                current_date = datetime.now().strftime("%Y%m%d")
+                log_file = os.path.join(
+                    get_app_path(), "logs", f"service_{current_date}.log"
+                )
 
                 if os.path.exists(log_file):
-                    if not hasattr(window, 'last_processed_line'):
+                    if not hasattr(window, "last_processed_line"):
                         window.last_processed_line = 0
 
-                    with open(log_file, 'r', encoding='utf-8') as f:
+                    with open(log_file, "r", encoding="utf-8") as f:
                         logs = f.readlines()
-                        new_logs = logs[window.last_processed_line:]
+                        new_logs = logs[window.last_processed_line :]
 
                         for log in new_logs:
-                            window.log_area.insert('end', log)
-                            window.log_area.see('end')
+                            window.log_area.insert("end", log)
+                            window.log_area.see("end")
 
                         window.last_processed_line = len(logs)
 
@@ -2277,11 +2444,13 @@ class FileShareApp:
         # 根据状态设置颜色
         if config.use_waitress:
             self.waitress_label.configure(style="success.TLabel")
-            flask_app.logger.info('服务模式已切换成Cheroot多线程服务模式，适合生产环境')
+            flask_app.logger.info("服务模式已切换成Cheroot多线程服务模式，适合生产环境")
 
         else:
             self.werkzeug_label.configure(style="success.TLabel")
-            flask_app.logger.info('服务模式已切换成werkzeug单线程服务模式，适合开发调试')
+            flask_app.logger.info(
+                "服务模式已切换成werkzeug单线程服务模式，适合开发调试"
+            )
         config.save()
 
     def toggle_server(self):
@@ -2303,14 +2472,16 @@ class FileShareApp:
                 try:
                     self.save_config()
                     self.start_btn.configure(
-                        text="正在启动...",
-                        style="warning.TButton",
-                        state='disabled'
+                        text="正在启动...", style="warning.TButton", state="disabled"
                     )
-                    win32serviceutil.StartService('FileShareService')
-                    self.start_btn.configure(text="停止后台服务", style="danger.TButton", state='normal')
+                    win32serviceutil.StartService("FileShareService")
+                    self.start_btn.configure(
+                        text="停止后台服务", style="danger.TButton", state="normal"
+                    )
                     self.back_server_running = True
-                    flask_app.logger.info(f"后台服务已启动 : ipv4: {url}\n ipv6: {url_ipv6}")
+                    flask_app.logger.info(
+                        f"后台服务已启动 : ipv4: {url}\n ipv6: {url_ipv6}"
+                    )
                     if not self.page_btn.winfo_ismapped():
                         self.page_btn.pack(side=LEFT, pady=10, padx=(0, 10))
                 except Exception as e:
@@ -2318,12 +2489,12 @@ class FileShareApp:
             else:
                 try:
                     self.start_btn.configure(
-                        text="正在停止...",
-                        style="warning.TButton",
-                        state='disabled'
+                        text="正在停止...", style="warning.TButton", state="disabled"
                     )
-                    win32serviceutil.StopService('FileShareService')
-                    self.start_btn.configure(text="启动后台服务", style="success.TButton", state='normal')
+                    win32serviceutil.StopService("FileShareService")
+                    self.start_btn.configure(
+                        text="启动后台服务", style="success.TButton", state="normal"
+                    )
                     self.back_server_running = False
                     flask_app.logger.info("后台服务已成功停止")
                     self.page_btn.pack_forget()
@@ -2333,13 +2504,17 @@ class FileShareApp:
             if not self.server_running:
                 self.save_config()
                 if self.is_port_in_use(runningPort):
-                    if tkmessagebox.askyesno("端口被占用",
-                                             f"端口 {runningPort} 已被占用。是否尝试强制释放该端口？"):
+                    if tkmessagebox.askyesno(
+                        "端口被占用",
+                        f"端口 {runningPort} 已被占用。是否尝试强制释放该端口？",
+                    ):
                         if self.force_cleanup_port(runningPort):
                             self.log_area.insert(END, f"已强制释放端口 {runningPort}\n")
                             return
                         else:
-                            self.log_area.insert(END, f"无法释放端口 {runningPort}，请尝试使用其他端口\n")
+                            self.log_area.insert(
+                                END, f"无法释放端口 {runningPort}，请尝试使用其他端口\n"
+                            )
                             return
                     else:
                         return
@@ -2349,31 +2524,39 @@ class FileShareApp:
                         if config.use_waitress:
                             # 使用Cheroot替代Waitress
                             self.server_running = True
-                            self.root.after(0, lambda: self.start_btn.configure(text="停止服务", style="danger.TButton"))
+                            self.root.after(
+                                0,
+                                lambda: self.start_btn.configure(
+                                    text="停止服务", style="danger.TButton"
+                                ),
+                            )
                             self.switch_server_type_ui(True)
 
                             # 创建两个服务器实例
                             optimal_threads = max(2, get_optimal_threads() // 2)
                             # 对半分，因为我这里是ipv4ipv6分开监听的
-                            self.logger.info(f"根据当前CPU核心数自动设置ipv4与ipv6的服务线程数分别为：{optimal_threads}")
+                            self.logger.info(
+                                f"根据当前CPU核心数自动设置ipv4与ipv6的服务线程数分别为：{optimal_threads}"
+                            )
 
                             # 创建HTTP服务器（使用Cheroot替换Waitress）
                             from cheroot_server import create_cheroot_http_server
+
                             self.server_ipv4 = create_cheroot_http_server(
                                 flask_app,
-                                host='0.0.0.0',
+                                host="0.0.0.0",
                                 port=port,
                                 threads=optimal_threads,
                                 connection_limit=1000,
-                                channel_timeout=300
+                                channel_timeout=300,
                             )
                             self.server_ipv6 = create_cheroot_http_server(
                                 flask_app,
-                                host='::',
+                                host="::",
                                 port=port,
                                 threads=optimal_threads,
                                 connection_limit=1000,
-                                channel_timeout=300
+                                channel_timeout=300,
                             )
 
                             # 如果启用SSL，创建HTTPS服务器（使用Cheroot原生SSL）
@@ -2386,61 +2569,95 @@ class FileShareApp:
                                     key_path = self.ssl_manager.get_key_file_path()
                                     if cert_path and key_path:
                                         ssl_port = config.ssl_port
-                                        self.logger.info(f"SSL已启用，使用证书: {cert_path}，端口: {ssl_port}")
+                                        self.logger.info(
+                                            f"SSL已启用，使用证书: {cert_path}，端口: {ssl_port}"
+                                        )
 
                                         try:
                                             # 使用Cheroot的原生SSL支持（高性能且稳定）
-                                            from cheroot_server import create_cheroot_https_server
+                                            from cheroot_server import (
+                                                create_cheroot_https_server,
+                                            )
 
                                             # 创建SSL Cheroot服务器
-                                            self.ssl_server_ipv4 = create_cheroot_https_server(
-                                                flask_app,
-                                                host='0.0.0.0',
-                                                port=ssl_port,
-                                                cert_file=cert_path,
-                                                key_file=key_path,
-                                                threads=optimal_threads,
-                                                connection_limit=1000,
-                                                channel_timeout=300
+                                            self.ssl_server_ipv4 = (
+                                                create_cheroot_https_server(
+                                                    flask_app,
+                                                    host="0.0.0.0",
+                                                    port=ssl_port,
+                                                    cert_file=cert_path,
+                                                    key_file=key_path,
+                                                    threads=optimal_threads,
+                                                    connection_limit=1000,
+                                                    channel_timeout=300,
+                                                )
                                             )
 
                                             # 检查IPv6支持
                                             import socket
+
                                             if socket.has_ipv6:
                                                 try:
-                                                    self.ssl_server_ipv6 = create_cheroot_https_server(
-                                                        flask_app,
-                                                        host='::',
-                                                        port=ssl_port,
-                                                        cert_file=cert_path,
-                                                        key_file=key_path,
-                                                        threads=optimal_threads,
-                                                        connection_limit=1000,
-                                                        channel_timeout=300
+                                                    self.ssl_server_ipv6 = (
+                                                        create_cheroot_https_server(
+                                                            flask_app,
+                                                            host="::",
+                                                            port=ssl_port,
+                                                            cert_file=cert_path,
+                                                            key_file=key_path,
+                                                            threads=optimal_threads,
+                                                            connection_limit=1000,
+                                                            channel_timeout=300,
+                                                        )
                                                     )
                                                 except Exception as ipv6_error:
-                                                    self.logger.warning(f"IPv6 SSL服务器创建失败: {ipv6_error}")
+                                                    self.logger.warning(
+                                                        f"IPv6 SSL服务器创建失败: {ipv6_error}"
+                                                    )
                                                     self.ssl_server_ipv6 = None
                                             else:
-                                                self.logger.info("系统不支持IPv6，跳过IPv6 SSL服务器")
+                                                self.logger.info(
+                                                    "系统不支持IPv6，跳过IPv6 SSL服务器"
+                                                )
                                                 self.ssl_server_ipv6 = None
 
-                                            self.logger.info(f"HTTPS服务器已创建（使用Cheroot原生SSL），端口: {ssl_port}")
+                                            self.logger.info(
+                                                f"HTTPS服务器已创建（使用Cheroot原生SSL），端口: {ssl_port}"
+                                            )
 
                                             # 更新UI显示SSL服务器创建成功
-                                            self.root.after(0, lambda: self.log_area.insert(END, "✓ HTTPS服务器创建成功\n"))
-                                            self.root.after(0, lambda: self.log_area.see(END))
+                                            self.root.after(
+                                                0,
+                                                lambda: self.log_area.insert(
+                                                    END, "✓ HTTPS服务器创建成功\n"
+                                                ),
+                                            )
+                                            self.root.after(
+                                                0, lambda: self.log_area.see(END)
+                                            )
 
                                         except Exception as e:
-                                            self.logger.error(f"创建Cheroot SSL服务器失败: {e}")
+                                            self.logger.error(
+                                                f"创建Cheroot SSL服务器失败: {e}"
+                                            )
                                             self.ssl_server_ipv4 = None
                                             self.ssl_server_ipv6 = None
 
                                             # 更新UI显示SSL服务器创建失败
-                                            self.root.after(0, lambda: self.log_area.insert(END, f"✗ HTTPS服务器创建失败: {str(e)}\n"))
-                                            self.root.after(0, lambda: self.log_area.see(END))
+                                            self.root.after(
+                                                0,
+                                                lambda: self.log_area.insert(
+                                                    END,
+                                                    f"✗ HTTPS服务器创建失败: {str(e)}\n",
+                                                ),
+                                            )
+                                            self.root.after(
+                                                0, lambda: self.log_area.see(END)
+                                            )
                                     else:
-                                        self.logger.warning("SSL已启用但证书文件路径无效")
+                                        self.logger.warning(
+                                            "SSL已启用但证书文件路径无效"
+                                        )
                                 else:
                                     self.logger.warning("SSL已启用但没有有效证书")
 
@@ -2450,26 +2667,38 @@ class FileShareApp:
                                 max_workers = 4  # HTTP IPv4 + IPv6 + HTTPS IPv4 + IPv6
 
                             # 使用线程池同时运行服务器
-                            with ThreadPoolExecutor(max_workers=max_workers) as self.executor:
+                            with ThreadPoolExecutor(
+                                max_workers=max_workers
+                            ) as self.executor:
                                 # 启动HTTP服务器（Cheroot）
-                                self.future_ipv4 = self.executor.submit(self.server_ipv4.run)
-                                self.future_ipv6 = self.executor.submit(self.server_ipv6.run)
+                                self.future_ipv4 = self.executor.submit(
+                                    self.server_ipv4.run
+                                )
+                                self.future_ipv6 = self.executor.submit(
+                                    self.server_ipv6.run
+                                )
 
                                 # 启动HTTPS服务器（如果存在）
                                 ssl_servers_started = []
 
                                 if self.ssl_server_ipv4:
                                     # Cheroot SSL服务器
-                                    self.ssl_future_ipv4 = self.executor.submit(self.ssl_server_ipv4.run)
+                                    self.ssl_future_ipv4 = self.executor.submit(
+                                        self.ssl_server_ipv4.run
+                                    )
                                     ssl_servers_started.append("IPv4 Cheroot SSL")
 
                                 if self.ssl_server_ipv6:
                                     # Cheroot SSL服务器
-                                    self.ssl_future_ipv6 = self.executor.submit(self.ssl_server_ipv6.run)
+                                    self.ssl_future_ipv6 = self.executor.submit(
+                                        self.ssl_server_ipv6.run
+                                    )
                                     ssl_servers_started.append("IPv6 Cheroot SSL")
 
                                 if ssl_servers_started:
-                                    self.logger.info(f"HTTPS服务器已启动: {', '.join(ssl_servers_started)}")
+                                    self.logger.info(
+                                        f"HTTPS服务器已启动: {', '.join(ssl_servers_started)}"
+                                    )
                                 else:
                                     self.logger.warning("没有HTTPS服务器启动")
                         else:
@@ -2480,16 +2709,33 @@ class FileShareApp:
                                 timeout = 30  # 设置30秒超时
 
                             # 创建两个服务器实例
-                            self.server_ipv4 = make_server('0.0.0.0', port, flask_app,
-                                                           request_handler=TimeoutRequestHandler)
-                            self.server_ipv6 = make_server('::', port, flask_app,
-                                                           request_handler=TimeoutRequestHandler)
+                            self.server_ipv4 = make_server(
+                                "0.0.0.0",
+                                port,
+                                flask_app,
+                                request_handler=TimeoutRequestHandler,
+                            )
+                            self.server_ipv6 = make_server(
+                                "::",
+                                port,
+                                flask_app,
+                                request_handler=TimeoutRequestHandler,
+                            )
                             self.server_running = True
-                            self.root.after(0, lambda: self.start_btn.configure(text="停止服务", style="danger.TButton"))
+                            self.root.after(
+                                0,
+                                lambda: self.start_btn.configure(
+                                    text="停止服务", style="danger.TButton"
+                                ),
+                            )
                             self.switch_server_type_ui(True)
                             # 使用线程同时运行两个服务器
-                            self.thread_ipv4 = threading.Thread(target=self.server_ipv4.serve_forever)
-                            self.thread_ipv6 = threading.Thread(target=self.server_ipv6.serve_forever)
+                            self.thread_ipv4 = threading.Thread(
+                                target=self.server_ipv4.serve_forever
+                            )
+                            self.thread_ipv6 = threading.Thread(
+                                target=self.server_ipv6.serve_forever
+                            )
                             self.thread_ipv4.daemon = True
                             self.thread_ipv6.daemon = True
                             self.thread_ipv4.start()
@@ -2506,7 +2752,9 @@ class FileShareApp:
                 self.server_thread.start()
 
                 server_type = "Cheroot" if config.use_waitress else "Werkzeug"
-                flask_app.logger.info(f"HTTP服务已启动 ({server_type}): ipv4: {url}\n ipv6: {url_ipv6}")
+                flask_app.logger.info(
+                    f"HTTP服务已启动 ({server_type}): ipv4: {url}\n ipv6: {url_ipv6}"
+                )
 
                 # SSL状态会在run_server函数内部正确显示，这里不需要重复检查
                 if config.ssl_enabled:
@@ -2521,9 +2769,7 @@ class FileShareApp:
             else:
                 try:
                     self.start_btn.configure(
-                        text="正在停止...",
-                        style="warning.TButton",
-                        state='disabled'
+                        text="正在停止...", style="warning.TButton", state="disabled"
                     )
 
                     def force_shutdown():
@@ -2535,45 +2781,62 @@ class FileShareApp:
                                 # Mark server as stopped
                                 self.server_running = False
                                 # 关闭HTTP服务器（Cheroot）
-                                if hasattr(self, 'server_ipv4'):
+                                if hasattr(self, "server_ipv4"):
                                     self.server_ipv4.stop()
-                                if hasattr(self, 'server_ipv6'):
+                                if hasattr(self, "server_ipv6"):
                                     self.server_ipv6.stop()
 
                                 # 关闭HTTPS服务器
                                 ssl_servers_closed = []
 
-                                if hasattr(self, 'ssl_server_ipv4') and self.ssl_server_ipv4:
+                                if (
+                                    hasattr(self, "ssl_server_ipv4")
+                                    and self.ssl_server_ipv4
+                                ):
                                     try:
                                         # Cheroot SSL服务器
                                         self.ssl_server_ipv4.stop()
                                         ssl_servers_closed.append("IPv4 Cheroot SSL")
                                     except Exception as e:
-                                        self.logger.error(f"关闭SSL IPv4服务器时发生错误: {e}")
+                                        self.logger.error(
+                                            f"关闭SSL IPv4服务器时发生错误: {e}"
+                                        )
 
-                                if hasattr(self, 'ssl_server_ipv6') and self.ssl_server_ipv6:
+                                if (
+                                    hasattr(self, "ssl_server_ipv6")
+                                    and self.ssl_server_ipv6
+                                ):
                                     try:
                                         # Cheroot SSL服务器
                                         self.ssl_server_ipv6.stop()
                                         ssl_servers_closed.append("IPv6 Cheroot SSL")
                                     except Exception as e:
-                                        self.logger.error(f"关闭SSL IPv6服务器时发生错误: {e}")
+                                        self.logger.error(
+                                            f"关闭SSL IPv6服务器时发生错误: {e}"
+                                        )
 
                                 if ssl_servers_closed:
-                                    self.logger.info(f"HTTPS服务器已关闭: {', '.join(ssl_servers_closed)}")
+                                    self.logger.info(
+                                        f"HTTPS服务器已关闭: {', '.join(ssl_servers_closed)}"
+                                    )
                                 else:
                                     self.logger.info("没有HTTPS服务器需要关闭")
 
                                 # 关闭线程池
-                                if hasattr(self, 'executor'):
-                                    self.executor.shutdown(wait=False)  # 不等待，立即关闭
+                                if hasattr(self, "executor"):
+                                    self.executor.shutdown(
+                                        wait=False
+                                    )  # 不等待，立即关闭
                                     self.executor = None  # 释放线程池资源
 
                                     # 2. 等待服务线程结束
-                                if hasattr(self, 'server_thread'):
+                                if hasattr(self, "server_thread"):
                                     self.server_thread.join(timeout=2)  # 等待5秒
                                     if self.server_thread.is_alive():
-                                        self.log_area.insert(END, "服务线程未在指定时间内停止，强制关闭...\n")
+                                        self.log_area.insert(
+                                            END,
+                                            "服务线程未在指定时间内停止，强制关闭...\n",
+                                        )
                                         self.server_thread._stop()  # 强制停止线程
 
                                 # Force cleanup port and threads
@@ -2584,7 +2847,7 @@ class FileShareApp:
                                 self.start_btn.configure(
                                     text="启动服务",
                                     style="success.TButton",
-                                    state='normal'
+                                    state="normal",
                                 )
                                 self.switch_server_type_ui(False)
                                 self.log_area.insert(END, "服务已停止✓\n")
@@ -2594,30 +2857,33 @@ class FileShareApp:
                                 def shutdown_werkzeug():
                                     try:
                                         self.server_running = False
-                                        if hasattr(self, 'server_ipv4'):
+                                        if hasattr(self, "server_ipv4"):
                                             self.server_ipv4.shutdown()
                                             self.server_ipv4.server_close()
-                                        if hasattr(self, 'server_ipv6'):
+                                        if hasattr(self, "server_ipv6"):
                                             self.server_ipv6.shutdown()
                                             self.server_ipv6.server_close()
                                         self.start_btn.configure(
                                             text="启动服务",
                                             style="success.TButton",
-                                            state='normal'
+                                            state="normal",
                                         )
                                         self.switch_server_type_ui(False)
                                         self.log_area.insert(END, "服务已完全停止✓\n")
                                         self.log_area.see(END)
                                         self.page_btn.pack_forget()
                                     except Exception as e:
-                                        self.log_area.insert(END, f"停止Werkzeug服务器出错: {str(e)}\n")
+                                        self.log_area.insert(
+                                            END, f"停止Werkzeug服务器出错: {str(e)}\n"
+                                        )
                                         self.log_area.see(END)
 
                                 # 在新线程中执行关闭操作
-                                threading.Thread(target=shutdown_werkzeug, daemon=True).start()
+                                threading.Thread(
+                                    target=shutdown_werkzeug, daemon=True
+                                ).start()
 
                         except Exception as e:
-
                             self.log_area.insert(END, f"停止过程出错: {str(e)}\n")
 
                             self.log_area.see(END)
@@ -2625,13 +2891,7 @@ class FileShareApp:
                             # 即使出错也恢复按钮状态
                             self.switch_server_type_ui(False)
                             self.start_btn.configure(
-
-                                text="启动服务",
-
-                                style="success.TButton",
-
-                                state='normal'
-
+                                text="启动服务", style="success.TButton", state="normal"
                             )
 
                     self.root.after(100, force_shutdown)
@@ -2653,7 +2913,7 @@ class FileShareApp:
     def is_port_in_use(self, port):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                s.bind(('0.0.0.0', port))
+                s.bind(("0.0.0.0", port))
                 return False
             except OSError:
                 return True
@@ -2665,31 +2925,35 @@ class FileShareApp:
             self.log_area.see(END)
 
             # 1. 停止所有服务器线程
-            server_threads = [t for t in threading.enumerate()
-                                if t.name.startswith(('cheroot', 'waitress'))]
+            server_threads = [
+                t
+                for t in threading.enumerate()
+                if t.name.startswith(("cheroot", "waitress"))
+            ]
 
             for thread in server_threads:
-                if hasattr(thread, '_Thread__stop'):
+                if hasattr(thread, "_Thread__stop"):
                     thread._Thread__stop()
 
             # 2. 强制终止占用端口的进程
             import subprocess
+
             try:
                 # 查找占用端口的进程
                 result = subprocess.run(
-                    ['netstat', '-ano', '|', 'findstr', f':{port}'],
+                    ["netstat", "-ano", "|", "findstr", f":{port}"],
                     shell=True,
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
                 )
 
                 if result.stdout:
-                    lines = result.stdout.strip().split('\n')
+                    lines = result.stdout.strip().split("\n")
                     pids = set()
                     for line in lines:
                         parts = line.split()
-                        if len(parts) >= 5 and f':{port}' in parts[1]:
+                        if len(parts) >= 5 and f":{port}" in parts[1]:
                             pid = parts[-1]
                             if pid.isdigit():
                                 pids.add(pid)
@@ -2697,9 +2961,14 @@ class FileShareApp:
                     # 终止占用端口的进程
                     for pid in pids:
                         try:
-                            subprocess.run(['taskkill', '/F', '/PID', pid],
-                                         capture_output=True, timeout=5)
-                            self.log_area.insert(END, f"已终止占用端口{port}的进程PID:{pid}\n")
+                            subprocess.run(
+                                ["taskkill", "/F", "/PID", pid],
+                                capture_output=True,
+                                timeout=5,
+                            )
+                            self.log_area.insert(
+                                END, f"已终止占用端口{port}的进程PID:{pid}\n"
+                            )
                             self.log_area.see(END)
                         except Exception as e:
                             self.log_area.insert(END, f"终止进程PID:{pid}失败: {e}\n")
@@ -2711,20 +2980,23 @@ class FileShareApp:
 
             # 3. 等待一段时间
             import time
+
             time.sleep(2)
 
             # 4. 验证端口是否释放
             def check_port():
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
-                    sock.bind(('0.0.0.0', port))
+                    sock.bind(("0.0.0.0", port))
                     sock.close()
                     return True
                 except:
                     return False
 
             is_released = check_port()
-            self.log_area.insert(END, f"端口 {port} {'已释放' if is_released else '仍被占用'}\n")
+            self.log_area.insert(
+                END, f"端口 {port} {'已释放' if is_released else '仍被占用'}\n"
+            )
             self.log_area.see(END)
             return is_released
 
@@ -2741,7 +3013,7 @@ class FileShareApp:
 
     def is_service_installed(self):
         try:
-            win32serviceutil.QueryServiceStatus('FileShareService')
+            win32serviceutil.QueryServiceStatus("FileShareService")
             return True
         except:
             return False
@@ -2751,43 +3023,56 @@ class FileShareApp:
         self.force_delete_service()
 
         # 安装服务
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, "frozen", False):
             exe_path = sys.executable
         else:
             exe_path = sys.argv[0]
 
         win32serviceutil.InstallService(
-            serviceName='FileShareService',
-            displayName='FS文件分享服务',
+            serviceName="FileShareService",
+            displayName="FS文件分享服务",
             startType=win32service.SERVICE_AUTO_START,
             exeName=exe_path,
-            exeArgs='--run-as-service',
-            pythonClassString='main.FileShareService',  # 添加类的完整路径
-            description='提供文件共享Web服务 AQ contact: letvar@qq.com',
+            exeArgs="--run-as-service",
+            pythonClassString="main.FileShareService",  # 添加类的完整路径
+            description="提供文件共享Web服务 AQ contact: letvar@qq.com",
         )
 
     def force_delete_service(self):
         """强制删除服务的终极方案"""
 
         # 1. 强制停止服务进程 添加 creationflags 参数 屏敝黑色窗口
-        subprocess.run(['taskkill', '/F', '/FI', 'SERVICES eq FileShareService'],
-                       capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(
+            ["taskkill", "/F", "/FI", "SERVICES eq FileShareService"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
 
         # 2. 强制删除服务配置
-        subprocess.run(['sc', 'stop', 'FileShareService'],
-                       capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(
+            ["sc", "stop", "FileShareService"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         time.sleep(1)
-        subprocess.run(['sc', 'delete', 'FileShareService'],
-                       capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(
+            ["sc", "delete", "FileShareService"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         time.sleep(1)
 
         # 3. 使用 reg delete 强制删除注册表
-        subprocess.run(['reg', 'delete', 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\FileShareService', '/f'],
-                       capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(
+            [
+                "reg",
+                "delete",
+                "HKLM\\SYSTEM\\CurrentControlSet\\Services\\FileShareService",
+                "/f",
+            ],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
 
         # 4. 等待系统处理
         time.sleep(2)
@@ -2797,7 +3082,10 @@ class FileShareApp:
 
     def check_and_prompt_restart(self):
         if self.service_status == 4:
-            if tkmessagebox.askyesno("服务重启", "检测到后台服务正在运行，需要重启服务使新配置生效。是否现在重启？"):
+            if tkmessagebox.askyesno(
+                "服务重启",
+                "检测到后台服务正在运行，需要重启服务使新配置生效。是否现在重启？",
+            ):
                 self.restart_service()
 
     def restart_service(self):
@@ -2814,28 +3102,32 @@ class FileShareApp:
 
         if dialog.result:
             # 更新配置
-            config.page_title = dialog.result['page_title']
-            config.logo_name = dialog.result['logo_name']
-            config.logo_image_url = dialog.result['logo_image_url']
+            config.page_title = dialog.result["page_title"]
+            config.logo_name = dialog.result["logo_name"]
+            config.logo_image_url = dialog.result["logo_image_url"]
 
             # 保存配置
             config.save()
 
             # 显示成功消息
             self.log_area.insert(END, f"页面设置已更新并保存\n")
-            if dialog.result['logo_image_url']:
+            if dialog.result["logo_image_url"]:
                 self.log_area.insert(END, f"Logo图片将作为网页favicon显示\n")
             self.log_area.see(END)
 
             # 如果后台服务正在运行，提示重启
             if self.service_status == 4:
-                if tkmessagebox.askyesno("重启服务", "页面设置已更新，需要重启后台服务使新设置生效。是否现在重启？"):
+                if tkmessagebox.askyesno(
+                    "重启服务",
+                    "页面设置已更新，需要重启后台服务使新设置生效。是否现在重启？",
+                ):
                     self.restart_service()
 
 
 def main():
     try:
         from tkinterdnd2 import TkinterDnD
+
         root = TkinterDnD.Tk()  # 使用TkinterDnD.Tk替代ttk.Window
     except ImportError:
         root = tk.Tk()  # 降级使用普通窗口
@@ -2843,25 +3135,28 @@ def main():
     # 立即隐藏窗口
     root.withdraw()
     # 设置窗口图标
-    icon_path = get_path('static/favicon.ico')
+    icon_path = get_path("static/favicon.ico")
     root.iconbitmap(icon_path)
 
     # 设置默认主题
     style = ttk.Style(theme="cosmo")
 
     file_share_app = FileShareApp(root, style)
-    file_share_app.log_area.insert(END, "欢迎使用file_share，有任何问题或BUG请返馈至：letvar@qq.com "
-                                        "或者github:https://github.com/52op/file_share"
-                                        "\n本程序共两种服务方式："
-                                        "\n1.前台窗口服务方式：直接启动服务，必须在此程序打开的前提下"
-                                        "\n2.后台系统服务方式：点击安装为系服服务，程序会将自身安装成windows服务方式"
-                                        "，这样就可以实现随系统自动启动服务。"
-                                        "\n安装成系统服务后，可以随时再打开此程序进行配置更改及服务的卸载等 \n")
+    file_share_app.log_area.insert(
+        END,
+        "欢迎使用file_share，有任何问题或BUG请返馈至：letvar@qq.com "
+        "或者github:https://github.com/52op/file_share"
+        "\n本程序共两种服务方式："
+        "\n1.前台窗口服务方式：直接启动服务，必须在此程序打开的前提下"
+        "\n2.后台系统服务方式：点击安装为系服服务，程序会将自身安装成windows服务方式"
+        "，这样就可以实现随系统自动启动服务。"
+        "\n安装成系统服务后，可以随时再打开此程序进行配置更改及服务的卸载等 \n",
+    )
     file_share_app.log_area.see(END)
     service_status_messages = {
         4: "当前后台服务状态：运行中...",
         1: "当前后台服务状态：已安装，未启动",
-        None: "当前后台服务状态：未安装"
+        None: "当前后台服务状态：未安装",
     }
 
     # 获取对应的消息
@@ -2880,13 +3175,19 @@ if __name__ == "__main__":
     print(f"程序目录:{get_app_path()}")
 
     # 确保静态文件目录存在
-    static_dir = os.path.join(get_app_path(), 'static')
-    logos_dir = os.path.join(static_dir, 'logos')
+    static_dir = os.path.join(get_app_path(), "static")
+    logos_dir = os.path.join(static_dir, "logos")
     os.makedirs(logos_dir, exist_ok=True)
     print(f"静态文件目录: {static_dir}")
     print(f"Logo目录: {logos_dir}")
 
-    if len(sys.argv) > 1 and sys.argv[1].lower() == '--run-as-service':
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "--run-as-service":
+        if not PYWIN32_AVAILABLE:
+            print(
+                "当前环境缺少 pywin32 组件（servicemanager/win32service*），无法以系统服务模式运行。"
+            )
+            print("请安装 pywin32 后重试，或不带 --run-as-service 参数以普通模式启动。")
+            sys.exit(1)
         try:
             servicemanager.Initialize()
             servicemanager.PrepareToHostSingle(FileShareService)
@@ -2897,6 +3198,12 @@ if __name__ == "__main__":
             traceback.print_exc()
 
     elif len(sys.argv) > 1:
+        if not PYWIN32_AVAILABLE:
+            print(
+                "当前环境缺少 pywin32 组件（servicemanager/win32service*），服务管理命令不可用。"
+            )
+            print("请安装 pywin32 后重试，或不带参数直接启动程序。")
+            sys.exit(1)
         win32serviceutil.HandleCommandLine(FileShareService)
     else:
         main()
