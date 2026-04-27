@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 # 项目根目录（兼容 PyInstaller 执行 spec 时 __file__ 不存在）
 if "__file__" in globals():
     PROJECT_ROOT = Path(__file__).resolve().parent
@@ -43,6 +45,7 @@ a = Analysis(
         "pypinyin",
         "tkinterdnd2",
         "cryptography",
+        "loguru",
         # Windows 服务相关（动态导入）
         "win32timezone",
         "win32service",
@@ -61,6 +64,9 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+# 自动收集 loguru 的所有子模块，避免打包后缺少内部模块
+a.hiddenimports += collect_submodules("loguru")
 
 pyz = PYZ(a.pure)
 

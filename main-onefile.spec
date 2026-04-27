@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # 在 PyInstaller 执行 spec 时，__file__ 可能未定义，使用当前工作目录兜底
 if "__file__" in globals():
@@ -17,7 +17,17 @@ datas = [
 ]
 
 # 自动收集 tkinterdnd2 的数据文件，避免写死 venv 路径
-datas += collect_data_files("tkinterdnd2")
+try:
+    datas += collect_data_files("tkinterdnd2")
+except Exception:
+    pass
+
+# 自动收集 loguru 的所有子模块，避免打包后运行时报 No module named 'loguru'
+loguru_hiddenimports = []
+try:
+    loguru_hiddenimports = collect_submodules("loguru")
+except Exception:
+    pass
 
 a = Analysis(
     ["main.py"],
@@ -34,11 +44,12 @@ a = Analysis(
         "ssl_manager",
         "ssl_settings_dialog",
         "cheroot_server",
-        # 条件导入的模块（在try/except中）
+        # 条件导入的模块（在 try/except 中）
         "pypinyin",
         "tkinterdnd2",
         "cryptography",
-        # Windows服务相关（动态导入）
+        "loguru",
+        # Windows 服务相关（动态导入）
         "win32timezone",
         "win32service",
         "win32serviceutil",
@@ -49,7 +60,8 @@ a = Analysis(
         "cheroot.wsgi",
         "cheroot.ssl",
         "cheroot.ssl.builtin",
-    ],
+    ]
+    + loguru_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -75,9 +87,6 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
     icon=[str(project_root / "favicon.ico")]
     if (project_root / "favicon.ico").exists()
     else None,
