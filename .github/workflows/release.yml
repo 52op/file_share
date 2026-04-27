@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies (Python 3.8 compatible)
         shell: pwsh
         run: |
-          python - <<'PY'
+          @'
           from pathlib import Path
           import re
 
@@ -56,7 +56,7 @@ jobs:
 
           Path("requirements-ci.txt").write_text("\n".join(filtered) + "\n", encoding="utf-8")
           print("generated requirements-ci.txt")
-          PY
+          '@ | python -
           pip install -r requirements-ci.txt
           pip install "Flask==2.3.3" "Werkzeug==2.3.8"
           pip install "pyinstaller==5.13.2"
