@@ -30,39 +30,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
 
-      # 处理 Flask/Werkzeug 与 Python 3.8 的兼容：
-      # Flask 3.x / Werkzeug 3.x 要求 Python >= 3.9
-      # 这里强制安装可在 Python 3.8 使用的组合
+      # 使用 temp.txt 安装依赖（无版本限制，与本地环境一致）
+      # 然后手动指定 Flask/Werkzeug 版本以确保 Python 3.8 兼容
       - name: Install dependencies (Python 3.8 compatible)
         shell: pwsh
         run: |
-          @'
-          from pathlib import Path
-          import re
-
-          req = Path("requirements.txt")
-          lines = req.read_text(encoding="utf-8").splitlines()
-          filtered = []
-          for line in lines:
-              s = line.strip()
-              if not s or s.startswith("#"):
-                  filtered.append(line)
-                  continue
-              if re.match(r"(?i)^flask(\s*[<>=!~].*)?$", s):
-                  continue
-              if re.match(r"(?i)^werkzeug(\s*[<>=!~].*)?$", s):
-                  continue
-              filtered.append(line)
-
-          Path("requirements-ci.txt").write_text("\n".join(filtered) + "\n", encoding="utf-8")
-          print("generated requirements-ci.txt")
-          '@ | python -
-          pip install -r requirements-ci.txt
+          pip install -r temp.txt
           pip install "Flask==2.3.3" "Werkzeug==2.3.8"
-          pip install "loguru==0.7.3"
-          pip install "netifaces==0.11.0"
-          python -c "import loguru; print('loguru ok:', loguru.__version__)"
           python -c "import netifaces; print('netifaces ok:', netifaces.__version__)"
+          python -c "import pystray; print('pystray ok:', pystray.__version__)"
           pip install "pyinstaller==5.13.2"
 
       - name: Build onefile exe
