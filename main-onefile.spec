@@ -1,39 +1,50 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_data_files
+
+project_root = Path(__file__).resolve().parent
+
+datas = [
+    (str(project_root / "templates"), "templates"),
+    (str(project_root / "static"), "static"),
+]
+
+# 自动收集 tkinterdnd2 的数据文件，避免写死 venv 路径
+datas += collect_data_files("tkinterdnd2")
 
 a = Analysis(
-    ['main.py'],
-    pathex=['E:\\letvar\\works\\python_app\\file_share'],
+    ["main.py"],
+    pathex=[str(project_root)],
     binaries=[],
-    datas=[('templates', 'templates'), ('static', 'static'), ('E:\\letvar\\works\\python_app\\file_share\\venv\\Lib\\site-packages\\tkinterdnd2', 'tkinterdnd2')],
+    datas=datas,
     hiddenimports=[
         # 项目模块（必需，因为是相对导入）
-        'routes',
-        'share_manager_ui',
-        'share_links',
-        'firewall',
-        'cleanup_manager',
-        'ssl_manager',
-        'ssl_settings_dialog',
-        'cheroot_server',
-
+        "routes",
+        "share_manager_ui",
+        "share_links",
+        "firewall",
+        "cleanup_manager",
+        "ssl_manager",
+        "ssl_settings_dialog",
+        "cheroot_server",
         # 条件导入的模块（在try/except中）
-        'pypinyin',
-        'tkinterdnd2',
-        'cryptography',
-
+        "pypinyin",
+        "tkinterdnd2",
+        "cryptography",
         # Windows服务相关（动态导入）
-        'win32timezone',
-        'win32service',
-        'win32serviceutil',
-        'win32event',
-        'servicemanager',
-
+        "win32timezone",
+        "win32service",
+        "win32serviceutil",
+        "win32event",
+        "servicemanager",
         # 运行时导入的模块
-        'cheroot',
-        'cheroot.wsgi',
-        'cheroot.ssl',
-        'cheroot.ssl.builtin'
+        "cheroot",
+        "cheroot.wsgi",
+        "cheroot.ssl",
+        "cheroot.ssl.builtin",
     ],
     hookspath=[],
     hooksconfig={},
@@ -42,6 +53,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -50,7 +62,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='file_share',
+    name="file_share",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -63,5 +75,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['favicon.ico'],
+    icon=[str(project_root / "favicon.ico")]
+    if (project_root / "favicon.ico").exists()
+    else None,
 )

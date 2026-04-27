@@ -1,39 +1,55 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 
+# 项目根目录（当前 spec 文件所在目录）
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+# 动态收集 tkinterdnd2 数据目录，避免写死虚拟环境路径
+try:
+    import tkinterdnd2
+
+    TKDND2_DATA_DIR = Path(tkinterdnd2.__file__).resolve().parent
+except Exception:
+    TKDND2_DATA_DIR = None
+
+datas = [
+    (str(PROJECT_ROOT / "templates"), "templates"),
+    (str(PROJECT_ROOT / "static"), "static"),
+]
+
+if TKDND2_DATA_DIR and TKDND2_DATA_DIR.exists():
+    datas.append((str(TKDND2_DATA_DIR), "tkinterdnd2"))
 
 a = Analysis(
-    ['main.py'],
-    pathex=['E:\\letvar\\works\\python_app\\file_share'],
+    ["main.py"],
+    pathex=[str(PROJECT_ROOT)],
     binaries=[],
-    datas=[('templates', 'templates'), ('static', 'static'), ('E:\\letvar\\works\\python_app\\file_share\\venv\\Lib\\site-packages\\tkinterdnd2', 'tkinterdnd2')],
+    datas=datas,
     hiddenimports=[
         # 项目模块（必需，因为是相对导入）
-        'routes',
-        'share_manager_ui',
-        'share_links',
-        'firewall',
-        'cleanup_manager',
-        'ssl_manager',
-        'ssl_settings_dialog',
-        'cheroot_server',
-
-        # 条件导入的模块（在try/except中）
-        'pypinyin',
-        'tkinterdnd2',
-        'cryptography',
-
-        # Windows服务相关（动态导入）
-        'win32timezone',
-        'win32service',
-        'win32serviceutil',
-        'win32event',
-        'servicemanager',
-
+        "routes",
+        "share_manager_ui",
+        "share_links",
+        "firewall",
+        "cleanup_manager",
+        "ssl_manager",
+        "ssl_settings_dialog",
+        "cheroot_server",
+        # 条件导入的模块（在 try/except 中）
+        "pypinyin",
+        "tkinterdnd2",
+        "cryptography",
+        # Windows 服务相关（动态导入）
+        "win32timezone",
+        "win32service",
+        "win32serviceutil",
+        "win32event",
+        "servicemanager",
         # 运行时导入的模块
-        'cheroot',
-        'cheroot.wsgi',
-        'cheroot.ssl',
-        'cheroot.ssl.builtin'
+        "cheroot",
+        "cheroot.wsgi",
+        "cheroot.ssl",
+        "cheroot.ssl.builtin",
     ],
     hookspath=[],
     hooksconfig={},
@@ -42,6 +58,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -49,7 +66,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='file_share',
+    name="file_share",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -60,8 +77,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['favicon.ico'],
+    icon=[str(PROJECT_ROOT / "favicon.ico")],
 )
+
 coll = COLLECT(
     exe,
     a.binaries,
@@ -69,5 +87,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='main',
+    name="main",
 )
