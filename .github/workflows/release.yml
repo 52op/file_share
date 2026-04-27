@@ -60,7 +60,9 @@ jobs:
           pip install -r requirements-ci.txt
           pip install "Flask==2.3.3" "Werkzeug==2.3.8"
           pip install "loguru==0.7.3"
+          pip install "netifaces==0.11.0"
           python -c "import loguru; print('loguru ok:', loguru.__version__)"
+          python -c "import netifaces; print('netifaces ok:', netifaces.__version__)"
           pip install "pyinstaller==5.13.2"
 
       - name: Build onefile exe
