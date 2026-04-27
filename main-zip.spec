@@ -46,6 +46,7 @@ a = Analysis(
         "tkinterdnd2",
         "cryptography",
         "loguru",
+        "netifaces",
         # Windows 服务相关（动态导入）
         "pywintypes",
         "pythoncom",

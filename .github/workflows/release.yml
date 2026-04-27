@@ -45,26 +45,61 @@ jobs:
         run: |
           pyinstaller --clean main-onefile.spec
 
-      - name: Verify artifact
+      - name: Build zip package
+        run: |
+          pyinstaller --clean main-zip.spec
+
+      - name: Verify artifacts
         shell: pwsh
         run: |
           if (-not (Test-Path "dist/file_share.exe")) {
             Write-Error "dist/file_share.exe not found"
             exit 1
           }
+          if (-not (Test-Path "dist/main/file_share.exe")) {
+            Write-Error "dist/main/file_share.exe not found"
+            exit 1
+          }
           Get-Item "dist/file_share.exe" | Format-List FullName,Length,LastWriteTime
+          Get-Item "dist/main/file_share.exe" | Format-List FullName,Length,LastWriteTime
 
-      - name: Package artifact
+      - name: Package artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item "dist/file_share.exe" "release/file_share-windows-x64.exe"
+          Copy-Item "dist/file_share.exe" "release/file_share.exe"
+          Compress-Archive -Path "dist/main/*" -DestinationPath "release/file_share.zip" -Force
 
-      - name: Create Release and upload asset
+      - name: Create Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
+          body: |
+            ## 文件分享工具 - Windows 版本
+            
+            ### 📦 下载选项：
+            
+            **1. 单文件版本** (`file_share.exe`)
+            - 适用于 Windows 7 及以上系统
+            - 一键运行，无需解压
+            - 适合快速部署和使用
+            
+            **2. 压缩包版本** (`file_share.zip`)
+            - 解压后运行 `file_share.exe`
+            - 优点：方便修改模板文件（templates/）和静态资源（static/）
+            - 适合需要自定义界面或功能的用户
+            
+            ### 💡 使用说明：
+            - 单文件版本：直接双击运行即可
+            - 压缩包版本：解压后双击 `file_share.exe` 运行
+            - 首次运行会自动配置防火墙规则
+            - 支持系统托盘后台运行
+            
+            ### 🔧 系统要求：
+            - Windows 7 SP1 及以上版本
+            - .NET Framework 4.5+（通常系统已内置）
           files: |
-            release/file_share-windows-x64.exe
+            release/file_share.exe
+            release/file_share.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
