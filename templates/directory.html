@@ -528,13 +528,111 @@
         }
 
         // 文件操作函数
+        // 单个分片上传超时时间（毫秒）。远程慢速链路下按需调大
+        const UPLOAD_CHUNK_TIMEOUT = 180000;
+        // 单个分片失败后的重试次数
+        const UPLOAD_MAX_RETRIES = 3;
+        // 分片上传地址
+        const uploadUrl = '/api/upload/{{ dir_obj.alias }}';
+
+        // 根据文件大小自适应分片大小：越大文件分片越大，减少慢链路上的请求次数
+        function getChunkSize(fileSize) {
+            if (fileSize > 1024 * 1024 * 1024) return 1024 * 1024 * 8;   // >1GB 8MB
+            if (fileSize > 256 * 1024 * 1024) return 1024 * 1024 * 4;    // >256MB 4MB
+            return 1024 * 1024 * 2;                                      // 默认 2MB
+        }
+
+        // 查询服务器已收到多少分片（用于失败续传和真实进度）
+        async function fetchUploadedChunks(fileId) {
+            try {
+                const resp = await fetch(`/api/upload/status/${encodeURIComponent(fileId)}`, {
+                    method: 'GET'
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    return parseInt(data.uploaded_chunks, 10) || 0;
+                }
+            } catch (e) {
+                console.warn('查询上传进度失败，按未上传处理:', e);
+            }
+            return 0;
+        }
+
+        // 上传单个分片，带超时和重试
+        async function uploadChunk(file, chunk, chunks, fileId, currentPath) {
+            const chunkSize = getChunkSize(file.size);
+            const chunkData = file.slice(chunk * chunkSize, (chunk + 1) * chunkSize);
+            const formData = new FormData();
+            formData.append('file', chunkData);
+            formData.append('current_path', currentPath);
+            formData.append('chunk_index', chunk);
+            formData.append('total_chunks', chunks);
+            formData.append('identifier', fileId);
+            formData.append('filename', file.name);
+
+            let retries = UPLOAD_MAX_RETRIES;
+            let delay = 2000;
+
+            while (true) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), UPLOAD_CHUNK_TIMEOUT);
+                try {
+                    const response = await fetch(uploadUrl, {
+                        method: 'POST',
+                        body: formData,
+                        signal: controller.signal
+                    });
+
+                    if (response.status >= 400 && response.status < 500) {
+                        // 4xx 属于请求本身问题，重试无意义，直接抛出
+                        throw new Error(`HTTP ${response.status} ${file.name} chunk ${chunk}`);
+                    }
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status} ${file.name} chunk ${chunk}`);
+                    }
+
+                    // 尝试解析服务器返回的真实分片数
+                    let uploaded = chunk + 1;
+                    try {
+                        const data = await response.json();
+                        if (data && typeof data.uploaded_chunks !== 'undefined') {
+                            uploaded = parseInt(data.uploaded_chunks, 10) || 0;
+                        }
+                    } catch (e) {
+                        // 响应是纯文本（最终分片返回 Success），忽略
+                    }
+                    return uploaded;
+                } catch (error) {
+                    clearTimeout(timer);
+                    if (error.name === 'AbortError') {
+                        error = new Error(`分片 ${chunk} 上传超时（${UPLOAD_CHUNK_TIMEOUT / 1000}s）`);
+                    }
+                    if (retries > 0 && !(error.message && error.message.startsWith('HTTP 4'))) {
+                        retries--;
+                        console.warn(`分片 ${chunk} 上传失败，${Math.round(delay / 1000)}s 后重试（剩余 ${retries} 次）:`, error.message);
+                        await new Promise(r => setTimeout(r, delay));
+                        delay = Math.min(delay * 2, 30000);
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+        }
+
+        // 更新单个文件进度条
+        function setProgress(progressBar, progressText, uploaded, chunks) {
+            const pct = Math.min(100, Math.round((uploaded / chunks) * 100));
+            progressBar.style.width = `${pct}%`;
+            progressBar.setAttribute('aria-valuenow', pct);
+            progressText.textContent = `${pct}%`;
+        }
+
         async function startUpload() {
             if (!uploadFiles.length) {
                 alert('请先选择要上传的文件');
                 return;
             }
 
-            const chunkSize = 1024 * 1024 * 2;
             const currentPath = window.location.pathname;
 
             for (let i = 0; i < uploadFiles.length; i++) {
@@ -543,39 +641,30 @@
                 const progressBar = fileElement.querySelector('.progress-bar');
                 const progressText = fileElement.querySelector('.progress-text');
 
+                const chunkSize = getChunkSize(file.size);
                 const chunks = Math.ceil(file.size / chunkSize);
                 const fileId = Date.now().toString() + '_' + file.name;
 
-                for (let chunk = 0; chunk < chunks; chunk++) {
-                    const chunkData = file.slice(chunk * chunkSize, (chunk + 1) * chunkSize);
-                    const formData = new FormData();
-                    formData.append('file', chunkData);
-                    formData.append('current_path', currentPath);
-                    formData.append('chunk_index', chunk);
-                    formData.append('total_chunks', chunks);
-                    formData.append('identifier', fileId);
-                    formData.append('filename', file.name);
+                // 重置进度条状态
+                progressBar.classList.remove('bg-danger', 'bg-success');
+                setProgress(progressBar, progressText, 0, chunks);
 
+                // 若之前有未完成的同标识分片，先查出已上传数量，实现续传
+                let uploaded = chunks > 1 ? await fetchUploadedChunks(fileId) : 0;
+                if (uploaded >= chunks) {
+                    // 全部已上传过（上次可能合并失败），重置为 0 重新上传
+                    uploaded = 0;
+                }
+
+                for (let chunk = uploaded; chunk < chunks; chunk++) {
                     try {
-                        const response = await fetch(`/api/upload/{{ dir_obj.alias }}`, {
-                            method: 'POST',
-                            body: formData
-                        });
-
-                        if (!response.ok) {
-                            throw new Error(`Upload failed for ${file.name}`);
-                        }
-
-                        // 更新进度条
-                        const progress = Math.round(((chunk + 1) / chunks) * 100);
-                        progressBar.style.width = `${progress}%`;
-                        progressBar.setAttribute('aria-valuenow', progress);
-                        progressText.textContent = `${progress}%`;
-
+                        const realUploaded = await uploadChunk(file, chunk, chunks, fileId, currentPath);
+                        uploaded = Math.max(realUploaded, chunk + 1);
+                        setProgress(progressBar, progressText, uploaded, chunks);
                     } catch (error) {
                         console.error(`Error uploading ${file.name}:`, error);
                         progressBar.classList.add('bg-danger');
-                        progressText.textContent = 'Failed';
+                        progressText.textContent = `Failed (chunk ${chunk})`;
                         return;
                     }
                 }

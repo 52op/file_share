@@ -756,15 +756,15 @@ def upload_file(alias):
     file.save(chunk_file)
 
     # 检查是否所有分片都已上传
-    uploaded_chunks = len(os.listdir(temp_dir))
+    uploaded_chunks = len([f for f in os.listdir(temp_dir) if f.startswith('chunk_')])
     if uploaded_chunks == int(chunks):
-        # 合并所有分片
+        # 合并所有分片（流式写入，避免大文件整片读入内存）
         final_path = os.path.join(target_dir, filename)
         with open(final_path, 'wb') as target_file:
             for i in range(int(chunks)):
                 chunk_path = os.path.join(temp_dir, f"chunk_{i}")
                 with open(chunk_path, 'rb') as chunk:
-                    target_file.write(chunk.read())
+                    shutil.copyfileobj(chunk, target_file, 1024 * 1024)
 
         # 清理临时文件
         shutil.rmtree(temp_dir)
