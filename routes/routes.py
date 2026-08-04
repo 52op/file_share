@@ -723,6 +723,16 @@ def upload_file(alias):
     if not file:
         return "No file", 400
 
+    # 校验分片参数，防止非法输入导致崩溃
+    try:
+        chunk_number = int(chunk_number)
+        chunks = int(chunks)
+    except (TypeError, ValueError):
+        return "Invalid chunk parameters", 400
+
+    if chunks < 1 or chunk_number < 0 or chunk_number >= chunks:
+        return "Invalid chunk index", 400
+
     dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
     if not dir_obj:
         return "Directory not found", 404
@@ -740,7 +750,7 @@ def upload_file(alias):
     filename = secure_filename_cn(filename)
 
     # 如果是普通上传（非分片）
-    if int(chunks) == 1:
+    if chunks == 1:
         file_path = os.path.join(target_dir, filename)
         file.save(file_path)
         client_info = get_client_info()
@@ -757,21 +767,25 @@ def upload_file(alias):
 
     # 检查是否所有分片都已上传
     uploaded_chunks = len([f for f in os.listdir(temp_dir) if f.startswith('chunk_')])
-    if uploaded_chunks == int(chunks):
+    if uploaded_chunks == chunks:
         # 合并所有分片（流式写入，避免大文件整片读入内存）
-        final_path = os.path.join(target_dir, filename)
-        with open(final_path, 'wb') as target_file:
-            for i in range(int(chunks)):
-                chunk_path = os.path.join(temp_dir, f"chunk_{i}")
-                with open(chunk_path, 'rb') as chunk:
-                    shutil.copyfileobj(chunk, target_file, 1024 * 1024)
+        try:
+            final_path = os.path.join(target_dir, filename)
+            with open(final_path, 'wb') as target_file:
+                for i in range(chunks):
+                    chunk_path = os.path.join(temp_dir, f"chunk_{i}")
+                    with open(chunk_path, 'rb') as chunk:
+                        shutil.copyfileobj(chunk, target_file, 1024 * 1024)
 
-        # 清理临时文件
-        shutil.rmtree(temp_dir)
+            # 清理临时文件
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
-        client_info = get_client_info()
-        flask_app.logger.info(f"{client_info} 上传文件: {filename} 到了{target_dir}")
-        return "Success", 200
+            client_info = get_client_info()
+            flask_app.logger.info(f"{client_info} 上传文件: {filename} 到了{target_dir}")
+            return "Success", 200
+        except Exception as e:
+            flask_app.logger.error(f"合并分片失败: {filename}, 错误: {e}")
+            return "Chunk merge failed", 500
 
     return jsonify({
         'uploaded_chunks': uploaded_chunks,

@@ -514,6 +514,13 @@
             return bytes + ' B';
         }
 
+        // 格式化上传速度
+        function formatSpeed(bytesPerSec) {
+            if (!isFinite(bytesPerSec) || bytesPerSec <= 0) return '';
+            if (bytesPerSec >= 1024 * 1024) return (bytesPerSec / (1024 * 1024)).toFixed(2) + ' MB/s';
+            return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+        }
+
         // 对话框显示函数
         function showUploadDialog() {
             fileList.innerHTML = '';
@@ -529,17 +536,18 @@
 
         // 文件操作函数
         // 单个分片上传超时时间（毫秒）。远程慢速链路下按需调大
-        const UPLOAD_CHUNK_TIMEOUT = 180000;
+        const UPLOAD_CHUNK_TIMEOUT = 300000;
         // 单个分片失败后的重试次数
         const UPLOAD_MAX_RETRIES = 3;
         // 分片上传地址
         const uploadUrl = '/api/upload/{{ dir_obj.alias }}';
 
-        // 根据文件大小自适应分片大小：越大文件分片越大，减少慢链路上的请求次数
+        // 根据文件大小自适应分片大小：慢链路下使用更小的分片，降低单个分片传输时间，减少超时重试
         function getChunkSize(fileSize) {
-            if (fileSize > 1024 * 1024 * 1024) return 1024 * 1024 * 8;   // >1GB 8MB
-            if (fileSize > 256 * 1024 * 1024) return 1024 * 1024 * 4;    // >256MB 4MB
-            return 1024 * 1024 * 2;                                      // 默认 2MB
+            if (fileSize > 1024 * 1024 * 1024) return 1024 * 1024 * 2;   // >1GB 2MB
+            if (fileSize > 256 * 1024 * 1024) return 1024 * 1024 * 1;    // >256MB 1MB
+            if (fileSize > 16 * 1024 * 1024) return 512 * 1024;          // >16MB 512KB
+            return 256 * 1024;                                           // 默认 256KB
         }
 
         // 查询服务器已收到多少分片（用于失败续传和真实进度）
@@ -558,7 +566,7 @@
             return 0;
         }
 
-        // 上传单个分片，带超时和重试
+        // 上传单个分片，带超时和重试。返回 {uploaded, durationMs} 用于进度和速度显示
         async function uploadChunk(file, chunk, chunks, fileId, currentPath) {
             const chunkSize = getChunkSize(file.size);
             const chunkData = file.slice(chunk * chunkSize, (chunk + 1) * chunkSize);
@@ -572,6 +580,7 @@
 
             let retries = UPLOAD_MAX_RETRIES;
             let delay = 2000;
+            const startTime = performance.now();
 
             while (true) {
                 const controller = new AbortController();
@@ -582,6 +591,7 @@
                         body: formData,
                         signal: controller.signal
                     });
+                    clearTimeout(timer);
 
                     if (response.status >= 400 && response.status < 500) {
                         // 4xx 属于请求本身问题，重试无意义，直接抛出
@@ -601,7 +611,7 @@
                     } catch (e) {
                         // 响应是纯文本（最终分片返回 Success），忽略
                     }
-                    return uploaded;
+                    return { uploaded, durationMs: performance.now() - startTime };
                 } catch (error) {
                     clearTimeout(timer);
                     if (error.name === 'AbortError') {
@@ -620,11 +630,17 @@
         }
 
         // 更新单个文件进度条
-        function setProgress(progressBar, progressText, uploaded, chunks) {
+        function setProgress(progressBar, progressText, uploaded, chunks, extraText = '') {
             const pct = Math.min(100, Math.round((uploaded / chunks) * 100));
             progressBar.style.width = `${pct}%`;
             progressBar.setAttribute('aria-valuenow', pct);
-            progressText.textContent = `${pct}%`;
+            progressText.textContent = `${pct}%${extraText ? ' · ' + extraText : ''}`;
+        }
+
+        // 生成稳定的文件标识：基于文件名+大小+修改时间，保证刷新/重选后可续传
+        function makeFileId(file) {
+            const lastMod = file.lastModified || 0;
+            return `${file.size}_${lastMod}_${file.name}`;
         }
 
         async function startUpload() {
@@ -643,11 +659,11 @@
 
                 const chunkSize = getChunkSize(file.size);
                 const chunks = Math.ceil(file.size / chunkSize);
-                const fileId = Date.now().toString() + '_' + file.name;
+                const fileId = makeFileId(file);
 
                 // 重置进度条状态
                 progressBar.classList.remove('bg-danger', 'bg-success');
-                setProgress(progressBar, progressText, 0, chunks);
+                setProgress(progressBar, progressText, 0, chunks, '准备上传...');
 
                 // 若之前有未完成的同标识分片，先查出已上传数量，实现续传
                 let uploaded = chunks > 1 ? await fetchUploadedChunks(fileId) : 0;
@@ -658,9 +674,12 @@
 
                 for (let chunk = uploaded; chunk < chunks; chunk++) {
                     try {
-                        const realUploaded = await uploadChunk(file, chunk, chunks, fileId, currentPath);
+                        setProgress(progressBar, progressText, chunk, chunks, `上传分片 ${chunk + 1}/${chunks}...`);
+                        const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath);
                         uploaded = Math.max(realUploaded, chunk + 1);
-                        setProgress(progressBar, progressText, uploaded, chunks);
+                        // 计算实时速度并展示，让用户确认上传在推进而非卡死
+                        const speed = chunkSize / (durationMs / 1000);
+                        setProgress(progressBar, progressText, uploaded, chunks, formatSpeed(speed));
                     } catch (error) {
                         console.error(`Error uploading ${file.name}:`, error);
                         progressBar.classList.add('bg-danger');
@@ -981,8 +1000,9 @@
             some(item => item.is_dir);
 
             function performSearch() {
-                const searchTerm = searchInput.value.toLowerCase();
+                const searchTerm = searchInput.value.trim().toLowerCase();
                 const listGroup = document.querySelector('.list-group');
+                const currentAlias = '{{ dir_obj.alias }}';
 
                 // 搜索框为空时恢复原始列表
                 if (searchTerm === '') {
@@ -992,10 +1012,17 @@
                     return;
                 }
 
+                // 去除 alias 前缀得到相对路径，供下载/预览等接口使用（避免 alias 重复）
+                function stripAlias(fullPath) {
+                    const prefix = currentAlias + '/';
+                    return fullPath.startsWith(prefix) ? fullPath.slice(prefix.length) : fullPath;
+                }
+
                 if (!hasSubDirs) {
                     // 纯前端搜索
                     const allItems = listGroup.querySelectorAll('.list-group-item');
 
+                    let matchCount = 0;
                     allItems.forEach(item => {
                         // 使用 display 样式直接控制可见性
                         const fileName = item.querySelector('.item-link').textContent.trim();
@@ -1003,14 +1030,31 @@
 
                         // 强制设置display属性
                         item.setAttribute('style', matches ? 'display: flex !important' : 'display: none !important');
+                        if (matches) matchCount++;
                     });
+
+                    if (matchCount === 0) {
+                        listGroup.innerHTML = `<div class="text-center text-muted py-4">未找到与“${searchTerm}”匹配的文件</div>`;
+                    }
                 } else {
-                    const currentAlias = '{{ dir_obj.alias }}';
-                    fetch(`/api/search/${currentAlias}?term=${searchTerm}`)
-                        .then(response => response.json())
-                        .then(results => {
+                    fetch(`/api/search/${encodeURIComponent(currentAlias)}?term=${encodeURIComponent(searchTerm)}`)
+                        .then(response => {
+                            if (!response.ok) {
+                                return response.json().catch(() => null).then(err => {
+                                    throw new Error(err && err.error ? err.error : `搜索请求失败（HTTP ${response.status}）`);
+                                });
+                            }
+                            return response.json();
+                        })
+                        .then(data => {
+                            const results = data && Array.isArray(data.results) ? data.results : [];
                             // 清空现有列表
                             listGroup.innerHTML = '';
+
+                            if (results.length === 0) {
+                                listGroup.innerHTML = `<div class="text-center text-muted py-4">未找到与“${searchTerm}”匹配的文件</div>`;
+                                return;
+                            }
 
                             // 根据搜索结果创建新的列表项
                             results.forEach(item => {
@@ -1018,6 +1062,8 @@
                                 listItem.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
 
                                 const icon = item.is_dir ? 'folder' : getFileIcon(item.name);
+                                // 下载等接口使用去掉 alias 前缀的相对路径
+                                const relPath = stripAlias(item.path);
 
                                 listItem.innerHTML = `
     <div class="d-flex align-items-center">
@@ -1025,7 +1071,7 @@
                data-path="${item.path}" data-name="${item.name}" data-is-dir="${item.is_dir}">
         <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
            class="item-link"
-           ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${item.path}'); return false;"` : ''}>
+           ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${relPath}'); return false;"` : ''}>
             <i class="bi bi-${icon} me-2"></i>
             ${item.name}
         </a>
@@ -1038,7 +1084,7 @@
             </button>
             ${!item.is_dir ? `
                 <button class="btn btn-sm btn-outline-info"
-                        onclick="${hasAdminPermission ? 'editFile' : 'previewFile'}('${item.name}', '${item.path}')"
+                        onclick="${hasAdminPermission ? 'editFile' : 'previewFile'}('${item.name}', '${relPath}')"
                         title="查看">
                     <i class="bi bi-eye"></i>
                 </button>
@@ -1068,6 +1114,10 @@
                             bindCheckboxEvents();
                             // 重新初始化工具提示
                             initTooltips();
+                        })
+                        .catch(error => {
+                            console.error('搜索失败:', error);
+                            listGroup.innerHTML = `<div class="text-center text-muted py-4">搜索失败：${error.message || '未知错误'}</div>`;
                         });
                 }
             }
