@@ -943,6 +943,7 @@ def delete_item(alias):
         return "Missing required parameters", 400
 
     is_dir = request.form.get('is_dir') == 'true'
+    recursive = request.form.get('recursive') == 'true'
     current_path = urllib.parse.unquote(current_path)
     name = urllib.parse.unquote(name)
 
@@ -957,7 +958,10 @@ def delete_item(alias):
 
     try:
         if is_dir:
-            os.rmdir(target_path)  # 只能删除空目录
+            if recursive:
+                shutil.rmtree(target_path)
+            else:
+                os.rmdir(target_path)  # 只能删除空目录
             pre_name = "目录"
         else:
             os.remove(target_path)
@@ -1026,7 +1030,7 @@ def batch_delete_items(alias):
 
         try:
             if is_dir:
-                os.rmdir(full_path)  # 只能删除空目录
+                shutil.rmtree(full_path)  # 批量删除直接递归删除非空文件夹
                 pre_name = '目录'
             else:
                 os.remove(full_path)

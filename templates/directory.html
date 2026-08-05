@@ -1122,32 +1122,59 @@
         async function deleteItem(name, isDir) {
             const itemType = isDir ? '文件夹' : '文件';
 
-            const confirmed = await FS_confirm(`确定要删除${itemType} "${name}" 吗？${isDir ? '\n注意：文件夹必须为空才能删除' : ''}`, '删除确认');
+            const confirmed = await FS_confirm(`确定要删除${itemType} "${name}" 吗？${isDir ? '\n提示：非空文件夹将要求输入名称确认后才能删除' : ''}`, '删除确认');
             if (!confirmed) return;
 
             const currentPath = window.location.pathname;
-            const formData = new FormData();
-            formData.append('name', name);
-            formData.append('current_path', currentPath);
-            formData.append('is_dir', isDir);
 
-            fetch(`/api/delete/{{ dir_obj.alias }}`, {
-                method: 'POST',
-                body: formData
-            })
-                .then(response => {
+            // 执行删除请求，返回 { ok, error }
+            async function doDelete(recursive) {
+                const formData = new FormData();
+                formData.append('name', name);
+                formData.append('current_path', currentPath);
+                formData.append('is_dir', isDir);
+                if (recursive) {
+                    formData.append('recursive', 'true');
+                }
+                try {
+                    const response = await fetch(`/api/delete/{{ dir_obj.alias }}`, {
+                        method: 'POST',
+                        body: formData
+                    });
                     if (response.ok) {
-                        location.reload();
-                    } else {
-                        // 获取详细错误信息
-                        return response.text().then(errorMsg => {
-                            throw new Error(errorMsg);
-                        });
+                        return { ok: true };
                     }
-                })
-                .catch(error => {
-                    alert(`${itemType}删除失败: ${error.message}`);
-                });
+                    const errorMsg = await response.text();
+                    return { ok: false, error: errorMsg };
+                } catch (e) {
+                    return { ok: false, error: e.message };
+                }
+            }
+
+            const first = await doDelete(false);
+            if (first.ok) {
+                location.reload();
+                return;
+            }
+
+            // 非空文件夹：要求输入目录名确认后才递归删除（GitHub 式安全确认）
+            if (isDir && first.error && first.error.includes('不为空')) {
+                const typed = await FS_prompt(`文件夹 "${name}" 不为空。\n请输入文件夹名称以确认删除，其全部内容将一并删除：`, '', '安全删除确认');
+                if (typed === null) return; // 用户取消
+                if (typed.trim() !== name) {
+                    alert(`输入的名称与 "${name}" 不一致，已取消删除`);
+                    return;
+                }
+                const second = await doDelete(true);
+                if (second.ok) {
+                    location.reload();
+                } else {
+                    alert(`文件夹删除失败: ${second.error}`);
+                }
+                return;
+            }
+
+            alert(`${itemType}删除失败: ${first.error}`);
         }
 
         // 批量删除选中的文件/文件夹（支持搜索态跨目录）
@@ -1164,7 +1191,7 @@
             }
 
             const dirCount = selectedItems.filter(i => i.is_dir).length;
-            const confirmMsg = `确定要删除选中的 ${selectedItems.length} 项吗？\n${dirCount > 0 ? `注意：其中 ${dirCount} 个文件夹必须为空才能删除` : ''}`;
+            const confirmMsg = `确定要删除选中的 ${selectedItems.length} 项吗？${dirCount > 0 ? `\n注意：其中 ${dirCount} 个文件夹将连同全部内容一并删除` : ''}`;
             const confirmed = await FS_confirm(confirmMsg, '批量删除确认');
             if (!confirmed) return;
 
