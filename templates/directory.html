@@ -1122,8 +1122,12 @@
         async function deleteItem(name, isDir) {
             const itemType = isDir ? '文件夹' : '文件';
 
-            const confirmed = await FS_confirm(`确定要删除${itemType} "${name}" 吗？${isDir ? '\n提示：非空文件夹将要求输入名称确认后才能删除' : ''}`, '删除确认');
-            if (!confirmed) return;
+            // 文件夹：不弹前置确认，直接尝试删除；空目录直接删，非空再要求输名称确认
+            // 文件：先确认再删
+            if (!isDir) {
+                const confirmed = await FS_confirm(`确定要删除文件 "${name}" 吗？`, '删除确认');
+                if (!confirmed) return;
+            }
 
             const currentPath = window.location.pathname;
 
