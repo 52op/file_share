@@ -175,12 +175,19 @@
         {% endif %}
 
         <div class="toolbar mb-3" id="batch-actions" style="display:none;">
+            <button class="btn btn-outline-primary" onclick="selectAllItems()">
+                <i class="bi bi-check-all"></i> 全选
+            </button>
+            <span class="align-middle me-2 text-muted" id="selected-count">已选 0 项</span>
             <button class="btn btn-primary" onclick="downloadSelected()">
                 <i class="bi bi-download"></i> 打包下载
             </button>
             {% if session.get('admin') or session.get('dir_admin_' + current_dir) %}
             <button class="btn btn-primary" onclick="showMoveDialog()">
                 <i class="bi bi-folder-symlink"></i> 移动到
+            </button>
+            <button class="btn btn-danger" onclick="batchDeleteItems()">
+                <i class="bi bi-trash"></i> 批量删除
             </button>
             {% endif %}
             <button class="btn btn-secondary" onclick="cancelSelection()">
@@ -1143,6 +1150,47 @@
                 });
         }
 
+        // 批量删除选中的文件/文件夹（支持搜索态跨目录）
+        async function batchDeleteItems() {
+            const selectedItems = Array.from(document.querySelectorAll('.item-checkbox:checked')).map(checkbox => ({
+                path: checkbox.dataset.path,
+                name: checkbox.dataset.name,
+                is_dir: checkbox.dataset.isDir === 'true'
+            }));
+
+            if (selectedItems.length === 0) {
+                alert('请先选择要删除的文件');
+                return;
+            }
+
+            const dirCount = selectedItems.filter(i => i.is_dir).length;
+            const confirmMsg = `确定要删除选中的 ${selectedItems.length} 项吗？\n${dirCount > 0 ? `注意：其中 ${dirCount} 个文件夹必须为空才能删除` : ''}`;
+            const confirmed = await FS_confirm(confirmMsg, '批量删除确认');
+            if (!confirmed) return;
+
+            try {
+                const response = await fetch(`/api/batch-delete/{{ dir_obj.alias }}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: selectedItems })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    const failedCount = (data && data.failed) || 0;
+                    if (failedCount > 0) {
+                        alert(`删除完成：成功 ${selectedItems.length - failedCount} 项，失败 ${failedCount} 项。\n${(data.errors || []).join('\n')}`);
+                    }
+                    location.reload();
+                } else {
+                    const errText = await response.text();
+                    alert('批量删除失败: ' + errText);
+                }
+            } catch (error) {
+                console.error('批量删除失败:', error);
+                alert('批量删除失败: ' + error.message);
+            }
+        }
+
 
         function handleDownload(dirname, filename) {
             window.location.href = `/download/${dirname}/${filename}`;
@@ -1221,14 +1269,59 @@
             return 'file-earmark';
         }
 
-        // 如果这两个函数在原始代码中没有定义,需要添加它们的定义 :
+        // 若这两个函数在原始代码中没有定义,需要添加它们的定义 :
+        let lastCheckedIndex = -1; // Shift 连选时记录的起点
+
+        // 刷新工具栏显示与已选计数
+        function updateBatchBar() {
+            const checkedBoxes = Array.from(document.querySelectorAll('.item-checkbox:checked'));
+            const countEl = document.getElementById('selected-count');
+            if (countEl) countEl.textContent = `已选 ${checkedBoxes.length} 项`;
+            document.getElementById('batch-actions').style.display =
+                checkedBoxes.length > 0 ? 'block' : 'none';
+        }
+
+        // 全选/取消全选当前可见的所有项
+        function selectAllItems() {
+            const boxes = Array.from(document.querySelectorAll('.item-checkbox'));
+            const allChecked = boxes.every(b => b.checked);
+            boxes.forEach(b => { b.checked = !allChecked; });
+            updateBatchBar();
+        }
+
+        // 取消选择
+        function cancelSelection() {
+            document.querySelectorAll('.item-checkbox:checked').forEach(b => { b.checked = false; });
+            updateBatchBar();
+        }
+
         function bindCheckboxEvents() {
-            const checkboxes = document.querySelectorAll('.item-checkbox');
-            checkboxes.forEach(checkbox => {
+            const checkboxes = Array.from(document.querySelectorAll('.item-checkbox'));
+            checkboxes.forEach((checkbox, index) => {
                 checkbox.addEventListener('change', () => {
-                    const checkedBoxes = document.querySelectorAll('.item-checkbox:checked');
-                    document.getElementById('batch-actions').style.display =
-                        checkedBoxes.length > 0 ? 'block' : 'none';
+                    if (checkbox.checked) {
+                        // 记录最近一次勾选的索引，作为 Shift 连选的起点
+                        lastCheckedIndex = index;
+                    }
+                    updateBatchBar();
+                });
+
+                // Shift + 点击实现范围连选
+                checkbox.addEventListener('click', (e) => {
+                    if (e.shiftKey && checkedCheckbox()) {
+                        e.preventDefault();
+                        const from = lastCheckedIndex === -1 ? 0 : Math.min(lastCheckedIndex, index);
+                        const to = lastCheckedIndex === -1 ? index : Math.max(lastCheckedIndex, index);
+                        const boxes = document.querySelectorAll('.item-checkbox');
+                        const targetState = checkboxes[index].checked;
+                        for (let i = from; i <= to; i++) {
+                            boxes[i].checked = targetState;
+                        }
+                        updateBatchBar();
+                    }
+                    function checkedCheckbox() {
+                        return Array.from(document.querySelectorAll('.item-checkbox')).some(c => c.checked);
+                    }
                 });
             });
         }
@@ -1246,6 +1339,10 @@
             const searchBtn = document.getElementById('searchBtn');
             const listGroup = document.querySelector('.list-group');
             const items = document.querySelectorAll('.list-group-item');
+
+            // 初始绑定复选框事件（含 Shift 连选）
+            bindCheckboxEvents();
+            updateBatchBar();
 
             // 保存原始列表HTML
             const originalListHTML = listGroup.innerHTML;

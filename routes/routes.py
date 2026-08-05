@@ -978,6 +978,77 @@ def delete_item(alias):
             return "删除操作失败", 400
 
 
+@flask_app.route('/api/batch-delete/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
+def batch_delete_items(alias):
+    """批量删除文件/文件夹。items 传完整 path（alias/相对路径），支持搜索态跨目录选择。"""
+    data = request.get_json(silent=True) or {}
+    items = data.get('items', [])
+    if not items:
+        return jsonify({'error': '未选择任何项目'}), 400
+
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    if not dir_obj:
+        return jsonify({'error': '目录不存在'}), 404
+
+    failed = 0
+    errors = []
+    success = 0
+    client_info = get_client_info()
+
+    for item in items:
+        item_path = item.get('path') or item.get('name')
+        is_dir = bool(item.get('is_dir'))
+        if not item_path:
+            failed += 1
+            errors.append('缺少项目路径')
+            continue
+
+        # item.path 形如 "alias/子目录/文件名"，去除 alias 前缀
+        rel = item_path.strip('/')
+        if rel.startswith(alias + '/'):
+            rel = rel[len(alias) + 1:]
+        else:
+            # 搜索态返回的是 alias/xxx，若没有前缀则按原样处理
+            pass
+
+        safe_rel = safe_relative_path(rel)
+        if safe_rel is None:
+            failed += 1
+            errors.append(f'{item_path}: 路径非法')
+            continue
+
+        full_path = os.path.join(dir_obj.path, safe_rel.replace('/', os.sep))
+        if not full_path.startswith(os.path.abspath(dir_obj.path)):
+            failed += 1
+            errors.append(f'{item_path}: 路径越界')
+            continue
+
+        try:
+            if is_dir:
+                os.rmdir(full_path)  # 只能删除空目录
+                pre_name = '目录'
+            else:
+                os.remove(full_path)
+                pre_name = '文件'
+            success += 1
+            flask_app.logger.info(f"{client_info} 批量删除了{pre_name}: {safe_rel}")
+        except OSError as e:
+            failed += 1
+            if "目录不是空的" in str(e):
+                errors.append(f'{item_path}: 文件夹不为空，请先清空内容')
+            elif "找不到" in str(e) or "系统找不到" in str(e):
+                errors.append(f'{item_path}: 找不到要删除的项目')
+            else:
+                errors.append(f'{item_path}: 删除失败')
+
+    return jsonify({
+        'success': success,
+        'failed': failed,
+        'errors': errors
+    })
+
+
 @flask_app.route('/api/rename/<path:alias>', methods=['POST'])
 @check_directory_admin_permission
 def rename_item(alias):
