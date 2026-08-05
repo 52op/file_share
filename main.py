@@ -405,6 +405,7 @@ class Config:
         self.security_code = "12356789"
         self.cleanup_time = 3600  # 定义清理临时文件及过期分享链接函数间隔时间
         self.auto_cleanup = True  # 添加auto_cleanup属性并设置默认值
+        self.session_timeout = 600  # 会话空闲超时（秒），0=禁用超时
 
         # SSL相关配置
         self.ssl_enabled = False  # 是否启用SSL
@@ -453,6 +454,7 @@ class Config:
             "cleanup_time": self.cleanup_time,  # 新增：保存清理间隔
             "auto_cleanup": self.auto_cleanup,  # 新增：保存自动清理设置
             "upload_temp_dir": self.upload_temp_dir,  # 新增：保存上传临时目录
+            "session_timeout": self.session_timeout,  # 会话空闲超时（秒）
             # SSL相关配置
             "ssl_enabled": self.ssl_enabled,
             "ssl_port": self.ssl_port,
@@ -494,6 +496,9 @@ class Config:
                 self.upload_temp_dir = data.get(
                     "upload_temp_dir", "temp/upload/"
                 )  # 新增：加载上传临时目录
+                self.session_timeout = data.get(
+                    "session_timeout", 600
+                )  # 会话空闲超时（秒），0=禁用
                 # SSL相关配置
                 self.ssl_enabled = data.get("ssl_enabled", False)
                 self.ssl_port = data.get("ssl_port", 443)

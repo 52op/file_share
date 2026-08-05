@@ -294,7 +294,16 @@ def inject_global_vars():
         'themes': get_themes(),
         'page_title': config.page_title,
         'logo_name': config.logo_name,
-        'logo_image_url': config.logo_image_url
+        'logo_image_url': config.logo_image_url,
+        'session_timeout_ms': config.session_timeout * 1000,
+        'session_timeout_minutes': max(0, config.session_timeout // 60),
+        'is_authenticated': bool(
+            session.get('admin')
+            or session.get('auth')
+            or any(k.startswith('auth_') and not k.startswith('auth_time') for k in session)
+            or any(k.startswith('dir_admin_') and not k.startswith('dir_admin_time') for k in session)
+            or any(k.startswith('share_auth_') and not k.startswith('share_auth_time') for k in session)
+        )
     }
 
 
@@ -309,6 +318,60 @@ def check_blocked_ip():
         return render_template('ip_blocked.html',
                              remaining_time=ip_limiter.get_remaining_time(ip),
                              pageMark='访问受限')
+
+
+@flask_app.before_request
+def check_session_timeout():
+    """会话空闲超时检查：超过 config.session_timeout 秒无活动则清除对应登录态"""
+    if request.path.startswith('/static/'):
+        return None
+    timeout = getattr(config, 'session_timeout', 600)
+    if not timeout or timeout <= 0:
+        return None
+    now = time.time()
+
+    def expire(key):
+        session.pop(key, None)
+
+    # 超级管理员
+    if session.get('admin'):
+        if now - session.get('admin_time', now) > timeout:
+            expire('admin')
+            expire('admin_time')
+        else:
+            session['admin_time'] = now
+
+    # 全局密码
+    if session.get('auth'):
+        if now - session.get('auth_time', now) > timeout:
+            expire('auth')
+            expire('auth_time')
+        else:
+            session['auth_time'] = now
+
+    # 目录密码 / 目录管理员 / 分享密码（遍历 session 键）
+    for key in list(session.keys()):
+        if key.startswith('auth_') and not key.startswith('auth_time'):
+            ts = session.get(f'auth_time_{key[5:]}', now)
+            if now - ts > timeout:
+                expire(key)
+                expire(f'auth_time_{key[5:]}')
+            else:
+                session[f'auth_time_{key[5:]}'] = now
+        elif key.startswith('dir_admin_') and not key.startswith('dir_admin_time'):
+            ts = session.get(f'dir_admin_time_{key[10:]}', now)
+            if now - ts > timeout:
+                expire(key)
+                expire(f'dir_admin_time_{key[10:]}')
+            else:
+                session[f'dir_admin_time_{key[10:]}'] = now
+        elif key.startswith('share_auth_') and not key.startswith('share_auth_time'):
+            ts = session.get(f'share_auth_time_{key[11:]}', now)
+            if now - ts > timeout:
+                expire(key)
+                expire(f'share_auth_time_{key[11:]}')
+            else:
+                session[f'share_auth_time_{key[11:]}'] = now
 
 
 @flask_app.route('/')
@@ -1064,6 +1127,7 @@ def admin_login():
     client_info = f"{request.remote_addr}"
     if request.form.get('password') == config.admin_password:
         session['admin'] = True
+        session['admin_time'] = time.time()
         ip_limiter.reset(client_info)  # 登录成功后重置计数
         flask_app.logger.info(f"{client_info} 管理员登录成功")
         return redirect(request.referrer or url_for('index'))  # 优先跳转到来源页面
@@ -1106,6 +1170,7 @@ def dir_admin_login():
     # 检查密码
     if dir_obj.admin_password and (password == dir_obj.admin_password or password == config.admin_password):
         session[f'dir_admin_{dirname}'] = True
+        session[f'dir_admin_time_{dirname}'] = time.time()
         ip_limiter.reset(client_info)  # 登录成功后重置计数
         flask_app.logger.info(f"{client_info} 目录管理员登录成功: {dirname}")
         return redirect(request.referrer or url_for('list_dir', dirname=dirname))
@@ -1378,6 +1443,13 @@ def update_settings():
         config.admin_password = new_admin_password
 
     config.global_password = data.get('global_password', '')
+
+    # 会话空闲超时（秒），0=禁用；非法值回退默认600
+    try:
+        config.session_timeout = max(0, int(data.get('session_timeout', config.session_timeout)))
+    except (TypeError, ValueError):
+        config.session_timeout = getattr(config, 'session_timeout', 600)
+
     config.save()
 
     flask_app.logger.info(f"{client_info} 更新了系统设置")

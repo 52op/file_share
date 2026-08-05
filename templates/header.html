@@ -397,5 +397,34 @@
                 </a>
             </div>
         </footer>
+
+        <script>
+            // 会话空闲自动登出：无操作达到超时阈值后静默刷新，由后端清除登录态
+            (function() {
+                const isAuth = {{ 'true' if is_authenticated else 'false' }};
+                const timeoutMs = {{ session_timeout_ms }};
+                if (!isAuth || !timeoutMs || timeoutMs <= 0) {
+                    return;
+                }
+
+                let idleTimer = null;
+
+                function resetIdleTimer() {
+                    if (idleTimer) {
+                        clearTimeout(idleTimer);
+                    }
+                    idleTimer = setTimeout(function() {
+                        window.location.reload();
+                    }, timeoutMs);
+                }
+
+                const activityEvents = ['mousemove', 'mousedown', 'keydown', 'click', 'scroll', 'touchstart'];
+                activityEvents.forEach(function(evt) {
+                    document.addEventListener(evt, resetIdleTimer, { passive: true });
+                });
+
+                resetIdleTimer();
+            })();
+        </script>
     </body>
 </html>
