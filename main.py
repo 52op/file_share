@@ -287,6 +287,27 @@ def secure_filename_cn(filename):
     return filename.strip()
 
 
+def safe_relative_path(rel_path):
+    """将前端传来的相对路径（可能含子目录）逐段净化，防止路径穿越。
+    返回 POSIX 风格安全相对路径；非法输入返回 None。
+    """
+    if not rel_path:
+        return None
+    rel_path = rel_path.replace("\\", "/").strip("/")
+    if not rel_path:
+        return None
+    parts = rel_path.split("/")
+    safe_parts = []
+    for p in parts:
+        if p in ("", ".", ".."):
+            return None
+        cleaned = secure_filename_cn(p)
+        if not cleaned:
+            return None
+        safe_parts.append(cleaned)
+    return "/".join(safe_parts)
+
+
 def get_client_info():
     user_agent_string = request.headers.get("User-Agent")
     user_agent = parse(user_agent_string)

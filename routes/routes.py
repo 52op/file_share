@@ -24,7 +24,7 @@ from werkzeug.utils import secure_filename
 from waitress.server import create_server  # 生产环境使用
 
 from main import flask_app, config, format_file_size, partial_download, send_file_generator, \
-    get_client_info, secure_filename_cn, ShareDirectory, password_change_timestamps, get_app_path
+    get_client_info, secure_filename_cn, safe_relative_path, ShareDirectory, password_change_timestamps, get_app_path
 from share_links import ShareManager   # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
 from firewall import IPLimiter
 
@@ -810,14 +810,18 @@ def upload_file(alias):
     else:
         target_dir = dir_obj.path
 
-    filename = secure_filename_cn(filename)
+    # filename 可能为相对路径（文件夹上传场景，如 "docs/img/a.png"），逐段净化防穿越
+    safe_rel = safe_relative_path(filename)
+    if safe_rel is None:
+        return "Invalid filename", 400
+    final_path = os.path.join(target_dir, *safe_rel.split('/'))
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
     # 如果是普通上传（非分片）
     if chunks == 1:
-        file_path = os.path.join(target_dir, filename)
-        file.save(file_path)
+        file.save(final_path)
         client_info = get_client_info()
-        flask_app.logger.info(f"{client_info} 上传文件: {filename} 到了{target_dir}")
+        flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
         return "Success", 200
 
     # 处理分片上传
@@ -833,7 +837,6 @@ def upload_file(alias):
     if uploaded_chunks == chunks:
         # 合并所有分片（流式写入，避免大文件整片读入内存）
         try:
-            final_path = os.path.join(target_dir, filename)
             with open(final_path, 'wb') as target_file:
                 for i in range(chunks):
                     chunk_path = os.path.join(temp_dir, f"chunk_{i}")
@@ -844,7 +847,7 @@ def upload_file(alias):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
             client_info = get_client_info()
-            flask_app.logger.info(f"{client_info} 上传文件: {filename} 到了{target_dir}")
+            flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
             return "Success", 200
         except Exception as e:
             flask_app.logger.error(f"合并分片失败: {filename}, 错误: {e}")

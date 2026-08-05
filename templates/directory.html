@@ -82,6 +82,23 @@
         .CodeMirror-toolbar button:hover {
             background: #eee;
         }
+
+        /* 页面级拖拽上传提示遮罩 */
+        body.page-dragging::after {
+            content: '松开以上传文件或文件夹';
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(13, 110, 253, 0.15);
+            border: 4px dashed #0d6efd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #0d6efd;
+            pointer-events: none;
+        }
     </style>
 
 
@@ -407,10 +424,14 @@
                 </div>
                 <div class="modal-body">
                     <div class="drop-zone" id="dropZone">
-                        <p class="mb-2">拖拽文件到此处或点击选择文件</p>
+                        <p class="mb-2">拖拽文件或文件夹到此处（也可拖到页面任意位置）</p>
                         <input type="file" class="form-control" id="fileInput" multiple style="display: none;">
+                        <input type="file" class="form-control" id="dirInput" webkitdirectory style="display: none;">
                         <button class="btn btn-outline-primary" onclick="document.getElementById('fileInput').click()">
                             选择文件
+                        </button>
+                        <button class="btn btn-outline-primary ms-2" onclick="document.getElementById('dirInput').click()">
+                            选择文件夹
                         </button>
                     </div>
                     <div id="fileList" class="mt-3"></div>
@@ -462,12 +483,112 @@
         const hasAdminPermission = isAdmin || isDirAdmin;
 
         // 全局变量
-        let uploadFiles = []; // 存储待上传的文件
+        let uploadTasks = []; // 存储文件/文件夹条目，用于展示
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
+        const dirInput = document.getElementById('dirInput');
         const fileList = document.getElementById('fileList');
 
-        // 拖放上传相关代码
+        // 递归遍历拖入的目录，收集 {file, relPath}。目录本身（含空目录）也会作为条目加入
+        function traverseFileTree(item, path, results) {
+            return new Promise((resolve) => {
+                if (item.isFile) {
+                    item.file((file) => {
+                        const relPath = path ? `${path}/${file.name}` : file.name;
+                        results.push({ file, relPath });
+                        resolve();
+                    }, () => resolve());
+                } else if (item.isDirectory) {
+                    const dirPath = path ? `${path}/${item.name}` : item.name;
+                    const reader = item.createReader();
+                    const readAll = (acc) => {
+                        reader.readEntries((entries) => {
+                            if (!entries.length) {
+                                Promise.all(acc).then(() => {
+                                    // 空目录也加入，由后端创建
+                                    if (acc.length === 0) {
+                                        results.push({ file: null, relPath: dirPath, isDir: true });
+                                    }
+                                    resolve();
+                                });
+                                return;
+                            }
+                            acc.push(...entries.map((e) => traverseFileTree(e, dirPath, results)));
+                            readAll(acc);
+                        }, () => resolve());
+                    };
+                    readAll([]);
+                } else {
+                    resolve();
+                }
+            });
+        }
+
+        // 从 DataTransfer 解析拖入的文件/文件夹
+        async function extractDroppedFiles(dataTransfer) {
+            const results = [];
+            if (dataTransfer.items && dataTransfer.items.length) {
+                const entries = [];
+                for (let i = 0; i < dataTransfer.items.length; i++) {
+                    const item = dataTransfer.items[i];
+                    if (item.kind === 'file') {
+                        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+                        if (entry) {
+                            entries.push(entry);
+                        } else {
+                            const f = item.getAsFile();
+                            if (f) results.push({ file: f, relPath: f.name });
+                        }
+                    }
+                }
+                await Promise.all(entries.map((entry) => traverseFileTree(entry, '', results)));
+            } else {
+                for (const f of dataTransfer.files) {
+                    results.push({ file: f, relPath: f.name });
+                }
+            }
+            return results;
+        }
+
+        // 页面级拖拽：拖入文件/文件夹时打开上传对话框并填充列表
+        let dragDepth = 0;
+        document.addEventListener('dragenter', (e) => {
+            if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+                e.preventDefault();
+                dragDepth++;
+                document.body.classList.add('page-dragging');
+            }
+        });
+        document.addEventListener('dragover', (e) => {
+            if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+            }
+        });
+        document.addEventListener('dragleave', (e) => {
+            if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+                e.preventDefault();
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (dragDepth === 0) {
+                    document.body.classList.remove('page-dragging');
+                }
+            }
+        });
+        document.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dragDepth = 0;
+            document.body.classList.remove('page-dragging');
+            if (!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'))) {
+                return;
+            }
+            extractDroppedFiles(e.dataTransfer).then((tasks) => {
+                if (tasks.length) {
+                    openUploadWithTasks(tasks);
+                }
+            });
+        });
+
+        // 模态框内拖拽
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             dropZone.classList.add('dragover');
@@ -479,31 +600,63 @@
 
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             dropZone.classList.remove('dragover');
-            uploadFiles = e.dataTransfer.files;
-            handleFiles(uploadFiles);
+            extractDroppedFiles(e.dataTransfer).then((tasks) => {
+                if (tasks.length) {
+                    openUploadWithTasks(tasks);
+                }
+            });
         });
 
         fileInput.addEventListener('change', () => {
-            uploadFiles = fileInput.files;
-            handleFiles(uploadFiles);
+            const tasks = Array.from(fileInput.files).map((f) => ({ file: f, relPath: f.name }));
+            openUploadWithTasks(tasks);
         });
 
-        // 文件处理函数
-        function handleFiles(files) {
+        dirInput.addEventListener('change', () => {
+            // webkitdirectory 模式下每个文件带 webkitRelativePath
+            const tasks = Array.from(dirInput.files).map((f) => {
+                const relPath = f.webkitRelativePath || f.name;
+                return { file: f, relPath };
+            });
+            openUploadWithTasks(tasks);
+        });
+
+        // 打开上传对话框并填充文件/文件夹列表
+        function openUploadWithTasks(tasks) {
+            showUploadDialog();
+            uploadTasks = tasks.slice();
+            handleTasks(tasks);
+        }
+
+        // 文件/文件夹处理函数
+        function handleTasks(tasks) {
             fileList.innerHTML = '';
-            for (let file of files) {
+            for (const task of tasks) {
                 const item = document.createElement('div');
                 item.className = 'mb-3';
-                item.innerHTML = `
+                if (task.isDir) {
+                    item.innerHTML = `
             <div class="d-flex justify-content-between align-items-center mb-1">
-                <span>${file.name} (${formatFileSize(file.size)})</span>
+                <span>📁 ${task.relPath}/</span>
                 <span class="progress-text">0%</span>
             </div>
             <div class="progress">
                 <div class="progress-bar" role="progressbar" style="width: 0%"
                      aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
             </div>`;
+                } else {
+                    item.innerHTML = `
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <span>📄 ${task.relPath} (${formatFileSize(task.file.size)})</span>
+                <span class="progress-text">0%</span>
+            </div>
+            <div class="progress">
+                <div class="progress-bar" role="progressbar" style="width: 0%"
+                     aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>`;
+                }
                 fileList.appendChild(item);
             }
         }
@@ -525,7 +678,8 @@
         function showUploadDialog() {
             fileList.innerHTML = '';
             fileInput.value = '';
-            uploadFiles = [];
+            dirInput.value = '';
+            uploadTasks = [];
             new bootstrap.Modal(document.getElementById('uploadDialog')).show();
         }
 
@@ -567,7 +721,7 @@
         }
 
         // 上传单个分片，带超时和重试。返回 {uploaded, durationMs} 用于进度和速度显示
-        async function uploadChunk(file, chunk, chunks, fileId, currentPath) {
+        async function uploadChunk(file, chunk, chunks, fileId, currentPath, relPath) {
             const chunkSize = getChunkSize(file.size);
             const chunkData = file.slice(chunk * chunkSize, (chunk + 1) * chunkSize);
             const formData = new FormData();
@@ -576,7 +730,7 @@
             formData.append('chunk_index', chunk);
             formData.append('total_chunks', chunks);
             formData.append('identifier', fileId);
-            formData.append('filename', file.name);
+            formData.append('filename', relPath || file.name);
 
             let retries = UPLOAD_MAX_RETRIES;
             let delay = 2000;
@@ -637,32 +791,70 @@
             progressText.textContent = `${pct}%${extraText ? ' · ' + extraText : ''}`;
         }
 
-        // 生成稳定的文件标识：基于文件名+大小+修改时间，保证刷新/重选后可续传
-        function makeFileId(file) {
+        // 生成稳定的文件标识：基于大小+修改时间+相对路径，保证刷新/重选后可续传，且子目录同名文件互不冲突
+        function makeFileId(file, relPath) {
             const lastMod = file.lastModified || 0;
-            return `${file.size}_${lastMod}_${file.name}`;
+            return `${file.size}_${lastMod}_${relPath}`;
+        }
+
+        // 上传一个目录任务（调用后端 /api/mkdir）
+        async function uploadDirectoryTask(task, currentPath, progressBar, progressText) {
+            const parts = task.relPath.split('/');
+            let pathAcc = currentPath;
+            for (const part of parts) {
+                const formData = new FormData();
+                formData.append('name', part);
+                formData.append('current_path', pathAcc);
+                const response = await fetch(`/api/mkdir/{{ dir_obj.alias }}`, {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`创建目录失败 ${task.relPath}: ${errText}`);
+                }
+                pathAcc = pathAcc === '/' ? `/${part}` : `${pathAcc}/${part}`;
+            }
+            progressBar.classList.add('bg-success');
+            progressText.textContent = '100% · 目录已创建';
         }
 
         async function startUpload() {
-            if (!uploadFiles.length) {
-                alert('请先选择要上传的文件');
+            if (!uploadTasks.length) {
+                alert('请先选择要上传的文件或文件夹');
                 return;
             }
 
             const currentPath = window.location.pathname;
 
-            for (let i = 0; i < uploadFiles.length; i++) {
-                const file = uploadFiles[i];
+            for (let i = 0; i < uploadTasks.length; i++) {
+                const task = uploadTasks[i];
                 const fileElement = fileList.children[i];
                 const progressBar = fileElement.querySelector('.progress-bar');
                 const progressText = fileElement.querySelector('.progress-text');
 
+                progressBar.classList.remove('bg-danger', 'bg-success');
+
+                // 目录任务
+                if (task.isDir || !task.file) {
+                    try {
+                        setProgress(progressBar, progressText, 0, 1, '创建目录...');
+                        await uploadDirectoryTask(task, currentPath, progressBar, progressText);
+                        continue;
+                    } catch (error) {
+                        console.error(`Error creating dir ${task.relPath}:`, error);
+                        progressBar.classList.add('bg-danger');
+                        progressText.textContent = `Failed (${task.relPath})`;
+                        return;
+                    }
+                }
+
+                const file = task.file;
                 const chunkSize = getChunkSize(file.size);
                 const chunks = Math.ceil(file.size / chunkSize);
-                const fileId = makeFileId(file);
+                const fileId = makeFileId(file, task.relPath);
 
                 // 重置进度条状态
-                progressBar.classList.remove('bg-danger', 'bg-success');
                 setProgress(progressBar, progressText, 0, chunks, '准备上传...');
 
                 // 若之前有未完成的同标识分片，先查出已上传数量，实现续传
@@ -675,13 +867,13 @@
                 for (let chunk = uploaded; chunk < chunks; chunk++) {
                     try {
                         setProgress(progressBar, progressText, chunk, chunks, `上传分片 ${chunk + 1}/${chunks}...`);
-                        const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath);
+                        const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
                         uploaded = Math.max(realUploaded, chunk + 1);
                         // 计算实时速度并展示，让用户确认上传在推进而非卡死
                         const speed = chunkSize / (durationMs / 1000);
                         setProgress(progressBar, progressText, uploaded, chunks, formatSpeed(speed));
                     } catch (error) {
-                        console.error(`Error uploading ${file.name}:`, error);
+                        console.error(`Error uploading ${task.relPath}:`, error);
                         progressBar.classList.add('bg-danger');
                         progressText.textContent = `Failed (chunk ${chunk})`;
                         return;
