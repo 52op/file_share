@@ -434,11 +434,28 @@
                             选择文件夹
                         </button>
                     </div>
-                    <div id="fileList" class="mt-3"></div>
+
+                    <!-- 摘要区 -->
+                    <div id="uploadSummary" class="mt-3 d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <span id="summaryText" class="fw-semibold"></span>
+                            <button type="button" class="btn btn-sm btn-link d-none" id="toggleDetailBtn">查看明细 ▾</button>
+                        </div>
+                        <div class="progress mb-1">
+                            <div class="progress-bar" id="summaryProgress" role="progressbar" style="width: 0%"
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <div id="summaryStatus" class="text-muted small"></div>
+                    </div>
+
+                    <!-- 明细区（默认折叠） -->
+                    <div id="detailWrap" class="mt-2 d-none">
+                        <div class="border rounded p-2" id="taskDetail" style="max-height: 220px; overflow-y: auto;"></div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button type="button" class="btn btn-primary" onclick="startUpload()">上传</button>
+                    <button type="button" class="btn btn-primary" id="uploadStartBtn" onclick="startUpload()">上传</button>
                 </div>
             </div>
         </div>
@@ -487,7 +504,13 @@
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
         const dirInput = document.getElementById('dirInput');
-        const fileList = document.getElementById('fileList');
+        const uploadSummary = document.getElementById('uploadSummary');
+        const summaryText = document.getElementById('summaryText');
+        const summaryProgress = document.getElementById('summaryProgress');
+        const summaryStatus = document.getElementById('summaryStatus');
+        const toggleDetailBtn = document.getElementById('toggleDetailBtn');
+        const detailWrap = document.getElementById('detailWrap');
+        const taskDetail = document.getElementById('taskDetail');
 
         // 递归遍历拖入的目录，收集 {file, relPath}。目录本身（含空目录）也会作为条目加入
         function traverseFileTree(item, path, results) {
@@ -627,38 +650,65 @@
         function openUploadWithTasks(tasks) {
             showUploadDialog();
             uploadTasks = tasks.slice();
-            handleTasks(tasks);
+            renderSummary();
+            renderTaskDetail();
         }
 
-        // 文件/文件夹处理函数
-        function handleTasks(tasks) {
-            fileList.innerHTML = '';
-            for (const task of tasks) {
-                const item = document.createElement('div');
-                item.className = 'mb-3';
-                if (task.isDir) {
-                    item.innerHTML = `
-            <div class="d-flex justify-content-between align-items-center mb-1">
-                <span>📁 ${task.relPath}/</span>
-                <span class="progress-text">0%</span>
-            </div>
-            <div class="progress">
-                <div class="progress-bar" role="progressbar" style="width: 0%"
-                     aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
-            </div>`;
-                } else {
-                    item.innerHTML = `
-            <div class="d-flex justify-content-between align-items-center mb-1">
-                <span>📄 ${task.relPath} (${formatFileSize(task.file.size)})</span>
-                <span class="progress-text">0%</span>
-            </div>
-            <div class="progress">
-                <div class="progress-bar" role="progressbar" style="width: 0%"
-                     aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
-            </div>`;
-                }
-                fileList.appendChild(item);
+        // 渲染摘要区统计
+        function renderSummary() {
+            const fileCount = uploadTasks.filter((t) => !t.isDir).length;
+            const dirCount = uploadTasks.filter((t) => t.isDir).length;
+            let text = `共 ${uploadTasks.length} 项待上传`;
+            if (dirCount > 0) text += `（${fileCount} 个文件 · ${dirCount} 个文件夹）`;
+            summaryText.textContent = text;
+            summaryStatus.textContent = fileCount ? '点击「上传」开始上传' : '仅文件夹，将直接创建目录';
+            summaryProgress.style.width = '0%';
+            summaryProgress.setAttribute('aria-valuenow', 0);
+            uploadSummary.classList.remove('d-none');
+
+            // 超过 8 项才显示「查看明细」折叠按钮，否则直接展示明细（数量少不占空间）
+            toggleDetailBtn.classList.toggle('d-none', uploadTasks.length <= 8);
+            if (uploadTasks.length <= 8) {
+                detailWrap.classList.remove('d-none');
+                toggleDetailBtn.textContent = '隐藏明细 ▴';
+            } else {
+                detailWrap.classList.add('d-none');
+                toggleDetailBtn.textContent = '查看明细 ▾';
             }
+        }
+
+        // 渲染明细列表（每个任务一行，含当前状态）
+        function renderTaskDetail() {
+            taskDetail.innerHTML = '';
+            uploadTasks.forEach((task, idx) => {
+                const item = document.createElement('div');
+                item.className = 'd-flex justify-content-between align-items-center py-1';
+                item.id = `uploadTaskRow_${idx}`;
+                const icon = task.isDir ? '📁' : '📄';
+                const name = task.isDir ? `${task.relPath}/` : task.relPath;
+                const size = task.isDir ? '' : ` (${formatFileSize(task.file.size)})`;
+                item.innerHTML = `
+                    <span class="text-truncate me-2" style="max-width: 70%" title="${name}">${icon} ${name}${size}</span>
+                    <span class="small text-muted flex-shrink-0" id="uploadTaskState_${idx}">等待中</span>`;
+                taskDetail.appendChild(item);
+            });
+        }
+
+        // 更新某个任务的状态文本
+        function setTaskState(idx, state, cls) {
+            const el = document.getElementById(`uploadTaskState_${idx}`);
+            if (el) {
+                el.textContent = state;
+                el.className = `small flex-shrink-0 ${cls || 'text-muted'}`;
+            }
+        }
+
+        // 更新总进度条与状态行
+        function updateSummary(done, total, statusText) {
+            const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+            summaryProgress.style.width = `${pct}%`;
+            summaryProgress.setAttribute('aria-valuenow', pct);
+            if (statusText) summaryStatus.textContent = statusText;
         }
 
         function formatFileSize(bytes) {
@@ -676,10 +726,12 @@
 
         // 对话框显示函数
         function showUploadDialog() {
-            fileList.innerHTML = '';
+            taskDetail.innerHTML = '';
             fileInput.value = '';
             dirInput.value = '';
             uploadTasks = [];
+            uploadSummary.classList.add('d-none');
+            detailWrap.classList.add('d-none');
             new bootstrap.Modal(document.getElementById('uploadDialog')).show();
         }
 
@@ -687,6 +739,12 @@
             document.getElementById('folderName').value = '';
             new bootstrap.Modal(document.getElementById('newFolderDialog')).show();
         }
+
+        // 查看/隐藏明细切换
+        toggleDetailBtn.addEventListener('click', () => {
+            const hidden = detailWrap.classList.toggle('d-none');
+            toggleDetailBtn.textContent = hidden ? '查看明细 ▾' : '隐藏明细 ▴';
+        });
 
         // 文件操作函数
         // 单个分片上传超时时间（毫秒）。远程慢速链路下按需调大
@@ -783,14 +841,6 @@
             }
         }
 
-        // 更新单个文件进度条
-        function setProgress(progressBar, progressText, uploaded, chunks, extraText = '') {
-            const pct = Math.min(100, Math.round((uploaded / chunks) * 100));
-            progressBar.style.width = `${pct}%`;
-            progressBar.setAttribute('aria-valuenow', pct);
-            progressText.textContent = `${pct}%${extraText ? ' · ' + extraText : ''}`;
-        }
-
         // 生成稳定的文件标识：基于大小+修改时间+相对路径，保证刷新/重选后可续传，且子目录同名文件互不冲突
         function makeFileId(file, relPath) {
             const lastMod = file.lastModified || 0;
@@ -798,7 +848,7 @@
         }
 
         // 上传一个目录任务（调用后端 /api/mkdir）
-        async function uploadDirectoryTask(task, currentPath, progressBar, progressText) {
+        async function uploadDirectoryTask(task, currentPath) {
             const parts = task.relPath.split('/');
             let pathAcc = currentPath;
             for (const part of parts) {
@@ -815,8 +865,6 @@
                 }
                 pathAcc = pathAcc === '/' ? `/${part}` : `${pathAcc}/${part}`;
             }
-            progressBar.classList.add('bg-success');
-            progressText.textContent = '100% · 目录已创建';
         }
 
         async function startUpload() {
@@ -826,68 +874,85 @@
             }
 
             const currentPath = window.location.pathname;
+            const total = uploadTasks.length;
+            let done = 0;
+            let failed = 0;
+            const uploadBtn = document.getElementById('uploadStartBtn');
 
-            for (let i = 0; i < uploadTasks.length; i++) {
+            if (uploadBtn) uploadBtn.disabled = true;
+
+            for (let i = 0; i < total; i++) {
                 const task = uploadTasks[i];
-                const fileElement = fileList.children[i];
-                const progressBar = fileElement.querySelector('.progress-bar');
-                const progressText = fileElement.querySelector('.progress-text');
-
-                progressBar.classList.remove('bg-danger', 'bg-success');
 
                 // 目录任务
                 if (task.isDir || !task.file) {
                     try {
-                        setProgress(progressBar, progressText, 0, 1, '创建目录...');
-                        await uploadDirectoryTask(task, currentPath, progressBar, progressText);
-                        continue;
+                        setTaskState(i, '创建中...', 'text-primary');
+                        updateSummary(done, total, `正在创建目录: ${task.relPath}`);
+                        await uploadDirectoryTask(task, currentPath);
+                        setTaskState(i, '✓ 已创建', 'text-success');
                     } catch (error) {
                         console.error(`Error creating dir ${task.relPath}:`, error);
-                        progressBar.classList.add('bg-danger');
-                        progressText.textContent = `Failed (${task.relPath})`;
-                        return;
+                        setTaskState(i, '✗ 失败', 'text-danger');
+                        failed++;
                     }
+                    done++;
+                    updateSummary(done, total, failed > 0 ? `已完成 ${done}/${total}（失败 ${failed}）` : `已完成 ${done}/${total}`);
+                    continue;
                 }
 
                 const file = task.file;
                 const chunkSize = getChunkSize(file.size);
                 const chunks = Math.ceil(file.size / chunkSize);
                 const fileId = makeFileId(file, task.relPath);
+                let ok = false;
 
-                // 重置进度条状态
-                setProgress(progressBar, progressText, 0, chunks, '准备上传...');
+                try {
+                    setTaskState(i, '查询续传...', 'text-primary');
+                    updateSummary(done, total, `正在上传: ${task.relPath}`);
 
-                // 若之前有未完成的同标识分片，先查出已上传数量，实现续传
-                let uploaded = chunks > 1 ? await fetchUploadedChunks(fileId) : 0;
-                if (uploaded >= chunks) {
-                    // 全部已上传过（上次可能合并失败），重置为 0 重新上传
-                    uploaded = 0;
-                }
+                    // 若之前有未完成的同标识分片，先查出已上传数量，实现续传
+                    let uploaded = chunks > 1 ? await fetchUploadedChunks(fileId) : 0;
+                    if (uploaded >= chunks) {
+                        // 全部已上传过（上次可能合并失败），重置为 0 重新上传
+                        uploaded = 0;
+                    }
 
-                for (let chunk = uploaded; chunk < chunks; chunk++) {
-                    try {
-                        setProgress(progressBar, progressText, chunk, chunks, `上传分片 ${chunk + 1}/${chunks}...`);
+                    for (let chunk = uploaded; chunk < chunks; chunk++) {
+                        updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${chunk + 1}/${chunks}）`);
                         const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
                         uploaded = Math.max(realUploaded, chunk + 1);
                         // 计算实时速度并展示，让用户确认上传在推进而非卡死
                         const speed = chunkSize / (durationMs / 1000);
-                        setProgress(progressBar, progressText, uploaded, chunks, formatSpeed(speed));
-                    } catch (error) {
-                        console.error(`Error uploading ${task.relPath}:`, error);
-                        progressBar.classList.add('bg-danger');
-                        progressText.textContent = `Failed (chunk ${chunk})`;
-                        return;
+                        updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${uploaded}/${chunks} · ${formatSpeed(speed)}）`);
                     }
+                    setTaskState(i, '✓ 完成', 'text-success');
+                    ok = true;
+                } catch (error) {
+                    console.error(`Error uploading ${task.relPath}:`, error);
+                    setTaskState(i, '✗ 失败', 'text-danger');
+                    failed++;
                 }
 
-                // 上传完成
-                progressBar.classList.add('bg-success');
-                progressText.textContent = 'Complete';
+                done++;
+                if (ok) {
+                    updateSummary(done, total, failed > 0 ? `已完成 ${done}/${total}（失败 ${failed}）` : `已完成 ${done}/${total}`);
+                }
             }
 
-            setTimeout(() => {
-                location.reload();
-            }, 1000);
+            if (uploadBtn) uploadBtn.disabled = false;
+
+            if (failed > 0) {
+                updateSummary(done, total, `上传结束：成功 ${total - failed}/${total}，失败 ${failed}。请检查后重试`);
+                setTimeout(() => {
+                    location.reload();
+                }, 1500);
+            } else {
+                updateSummary(done, total, '全部上传成功');
+                setTimeout(() => {
+                    location.reload();
+                }, 800);
+            }
         }
 
 
