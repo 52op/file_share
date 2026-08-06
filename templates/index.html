@@ -291,6 +291,27 @@
                                     <input type="number" class="form-control" name="session_timeout" min="0" value="{{ session_timeout_minutes }}">
                                     <small class="text-muted">页面无操作超过该时长自动退出登录，0 表示不限制</small>
                                 </div>
+                                <hr>
+                                <div class="mb-3">
+                                    <label class="form-label">
+                                        <i class="bi bi-shield-check"></i> 管理员两步验证(TOTP)
+                                    </label>
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input" type="checkbox" id="adminTotpEnabled" name="admin_totp_enabled">
+                                        <label class="form-check-label" for="adminTotpEnabled">启用后管理员登录需输入6位动态验证码</label>
+                                    </div>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="adminTotpSecret" name="admin_totp_secret"
+                                               placeholder="TOTP密钥" readonly>
+                                        <button class="btn btn-outline-secondary" type="button" id="genTotpBtn" onclick="generateTotp()">
+                                            <i class="bi bi-arrow-clockwise"></i> 生成密钥
+                                        </button>
+                                        <button class="btn btn-outline-primary" type="button" id="copyTotpBtn" onclick="copyTotpLink()">
+                                            <i class="bi bi-clipboard-plus"></i> 复制绑定链接
+                                        </button>
+                                    </div>
+                                    <small class="text-muted" id="totpLinkText">未启用。生成密钥后，复制绑定链接在身份验证器App中添加。</small>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -614,7 +635,75 @@
                     updateFavicon(this.value);
                 });
             }
+
+            // 打开系统设置弹窗时加载TOTP状态
+            const settingsModalEl = document.getElementById('settingsModal');
+            if (settingsModalEl) {
+                settingsModalEl.addEventListener('shown.bs.modal', loadTotpState);
+            }
         });
+
+        // 加载超管TOTP设置状态
+        async function loadTotpState() {
+            try {
+                const resp = await fetch('/api/totp');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const enabledEl = document.getElementById('adminTotpEnabled');
+                const secretEl = document.getElementById('adminTotpSecret');
+                const linkText = document.getElementById('totpLinkText');
+                enabledEl.checked = data.enabled;
+                secretEl.value = data.secret || '';
+                if (data.enabled && data.link) {
+                    linkText.textContent = '已启用。绑定链接：' + data.link;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // 生成新TOTP密钥
+        function generateTotp() {
+            const secret = randomBase32();
+            document.getElementById('adminTotpSecret').value = secret;
+            document.getElementById('adminTotpEnabled').checked = true;
+            document.getElementById('totpLinkText').textContent =
+                '已生成新密钥，请复制绑定链接在身份验证器App中添加。';
+        }
+
+        // 复制绑定链接
+        async function copyTotpLink() {
+            const secret = document.getElementById('adminTotpSecret').value.trim();
+            if (!secret) {
+                alert('请先生成TOTP密钥');
+                return;
+            }
+            const link = 'https://2fa.it0731.cn/tok/' + secret;
+            try {
+                await navigator.clipboard.writeText(link);
+                alert('绑定链接已复制：\n' + link);
+            } catch (e) {
+                // 剪贴板API不可用时降级
+                const ta = document.createElement('textarea');
+                ta.value = link;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                alert('绑定链接已复制：\n' + link);
+            }
+        }
+
+        // 生成随机32位Base32密钥
+        function randomBase32() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+            let result = '';
+            const values = new Uint8Array(32);
+            (window.crypto && window.crypto.getRandomValues) ?
+                window.crypto.getRandomValues(values) : (() => { for (let i=0;i<32;i++) values[i]=Math.floor(Math.random()*256); })();
+            for (let i = 0; i < 32; i++) {
+                result += chars[values[i] % 32];
+            }
+            return result;
+        }
 
         // Add Directory Form Handler
         document.getElementById('addDirForm').addEventListener('submit', async (e) => {

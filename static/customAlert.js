@@ -86,11 +86,16 @@ FS_confirm = function(message, title = '确认') {
 };
 
 // Bootstrap 风格的 prompt
-FS_prompt = function(message, defaultValue = '', title = '请输入') {
+FS_prompt = function(message, defaultValue = '', title = '请输入', copyText = null) {
     return new Promise((resolve) => {
         const modal = document.createElement('div');
         modal.className = 'modal fade';
         modal.setAttribute('tabindex', '-1');
+
+        const copyBtnHtml = copyText ? `
+            <button type="button" class="btn btn-outline-secondary btn-sm fs-copy-btn mb-2" title="复制名称">
+                <i class="bi bi-clipboard"></i> 复制
+            </button>` : '';
 
         modal.innerHTML = `
             <div class="modal-dialog modal-dialog-centered">
@@ -103,7 +108,11 @@ FS_prompt = function(message, defaultValue = '', title = '请输入') {
                         <form>
                             <div class="mb-3">
                                 <label class="form-label">${message}</label>
-                                <input type="text" class="form-control" value="${defaultValue}">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="fs-copy-name text-break">${copyText}</span>
+                                    ${copyBtnHtml}
+                                </div>
+                                <input type="text" class="form-control mt-1" value="${defaultValue}">
                             </div>
                         </form>
                     </div>
@@ -118,6 +127,18 @@ FS_prompt = function(message, defaultValue = '', title = '请输入') {
         document.body.appendChild(modal);
         const bootstrapModal = new bootstrap.Modal(modal);
         const input = modal.querySelector('input');
+
+        const copyBtn = modal.querySelector('.fs-copy-btn');
+        if (copyBtn) {
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(copyText).then(() => {
+                    copyBtn.innerHTML = '<i class="bi bi-check"></i> 已复制';
+                    setTimeout(() => {
+                        copyBtn.innerHTML = '<i class="bi bi-clipboard"></i> 复制';
+                    }, 1500);
+                });
+            };
+        }
 
         modal.querySelector('form').onsubmit = (e) => {
             e.preventDefault();

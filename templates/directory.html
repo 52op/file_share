@@ -1163,7 +1163,7 @@
 
             // 非空文件夹：要求输入目录名确认后才递归删除（GitHub 式安全确认）
             if (isDir && first.error && first.error.includes('不为空')) {
-                const typed = await FS_prompt(`文件夹 "${name}" 不为空。\n请输入文件夹名称以确认删除，其全部内容将一并删除：`, '', '安全删除确认');
+                const typed = await FS_prompt(`该文件夹不为空，请输入文件夹名称以确认删除，其全部内容将一并删除：`, '', '安全删除确认', name);
                 if (typed === null) return; // 用户取消
                 if (typed.trim() !== name) {
                     alert(`输入的名称与 "${name}" 不一致，已取消删除`);

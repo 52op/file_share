@@ -291,26 +291,16 @@
                 if (loading) loading.style.display = "none";
             }
 
-            // 预下载新主题 CSS，加载完成后真正切换并隐藏遮罩
-            function preloadTheme(themeUrl, themeName, callback) {
-                const link = document.createElement("link");
-                link.rel = "preload";
-                link.as = "style";
-                link.href = themeUrl;
-                link.onload = function () {
-                    document.head.removeChild(link);
-                    callback();
-                };
-                link.onerror = function () {
-                    document.head.removeChild(link);
-                    callback();
-                };
-                document.head.appendChild(link);
-            }
-
-            function applyTheme(themeUrl, themeName) {
+            function switchTheme(themeUrl, themeName) {
                 const themeLink = document.getElementById("bootstrapTheme");
-                if (themeLink) {
+                if (!themeLink) {
+                    console.error("Theme link element not found.");
+                    return;
+                }
+                // 先显示遮罩，旧样式在切换期间被遮挡，避免纯文字闪烁
+                showLoading();
+                // 若正在切换同一主题则直接完成
+                const apply = function () {
                     themeLink.href = themeUrl;
                     localStorage.setItem(THEME_KEY, themeUrl);
                     localStorage.setItem(THEME_NAME_KEY, themeName);
@@ -318,26 +308,14 @@
                         "themeSelectorDropdown",
                     );
                     if (dropdown) dropdown.textContent = themeName;
-                }
-            }
-
-            function switchTheme(themeUrl, themeName) {
-                const themeLink = document.getElementById("bootstrapTheme");
-                if (!themeLink) {
-                    console.error("Theme link element not found.");
-                    return;
-                }
-                // 显示遮罩，避免旧样式失效后新样式加载期间的纯文字闪烁
-                showLoading();
-                let done = false;
+                };
+                apply();
+                // 等新样式真正加载并应用完成后再撤掉遮罩
                 const finish = function () {
-                    if (done) return;
-                    done = true;
-                    applyTheme(themeUrl, themeName);
                     hideLoading();
                 };
-                // 预下载新主题，onload 后再真正切换
-                preloadTheme(themeUrl, themeName, finish);
+                themeLink.addEventListener("load", finish, { once: true });
+                themeLink.addEventListener("error", finish, { once: true });
                 // 超时兜底：防止主题文件 404/网络异常导致遮罩一直显示
                 setTimeout(finish, 3000);
             }

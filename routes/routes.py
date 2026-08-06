@@ -1642,6 +1642,16 @@ def update_settings():
 
     config.global_password = data.get('global_password', '')
 
+    # 超级管理员 TOTP 两步验证
+    totp_enabled = data.get('admin_totp_enabled')
+    if totp_enabled:
+        totp_secret = (data.get('admin_totp_secret', '') or '').strip()
+        if not totp_secret:
+            totp_secret = pyotp.random_base32()
+        config.admin_totp_secret = totp_secret
+    else:
+        config.admin_totp_secret = ''
+
     # 会话空闲超时（秒），0=禁用；非法值回退默认600
     try:
         config.session_timeout = max(0, int(data.get('session_timeout', config.session_timeout)))
@@ -1652,6 +1662,19 @@ def update_settings():
 
     flask_app.logger.info(f"{client_info} 更新了系统设置")
     return 'Success', 200
+
+
+@flask_app.route('/api/totp', methods=['GET'])
+def get_admin_totp():
+    """返回超级管理员TOTP设置状态（需管理员登录）"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    secret = getattr(config, 'admin_totp_secret', '') or ''
+    return jsonify({
+        'enabled': bool(secret),
+        'secret': secret,
+        'link': f"https://2fa.it0731.cn/tok/{secret}" if secret else ''
+    })
 
 
 @flask_app.route('/api/create-share', methods=['POST'])
