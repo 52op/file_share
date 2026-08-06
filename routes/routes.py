@@ -30,6 +30,14 @@ from firewall import IPLimiter
 import pyotp
 
 
+def get_dir_obj(alias):
+    """按别名查找目录对象，未找到返回 None。"""
+    for d in config.shared_dirs.values():
+        if d.alias == alias:
+            return d
+    return None
+
+
 def safe_join_path(base_path, *paths):
     """安全路径拼接，防止路径遍历攻击"""
     try:
@@ -156,7 +164,7 @@ def check_auth_timestamp(f):
         # print(f"password_change_timestamps['directories']:{password_change_timestamps['directories']}")
         # print(f"config.shared_dirs:{config.shared_dirs}")
         # 通过 alias 查找对应的目录配置
-        dir_config = next((d for d in config.shared_dirs.values() if getattr(d, 'alias', None) == dirname), None)
+        dir_config = get_dir_obj(dirname)
 
         # 检查目录是否需要认证
         if dir_config and getattr(dir_config, 'password', None):
@@ -271,7 +279,7 @@ def get_themes():
 def validate_file_path(filepath):
     """验证文件路径并返回完整路径"""
     base_dir = filepath.split('/')[0]
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+    dir_obj = get_dir_obj(base_dir)
 
     if not dir_obj:
         return '目录不存在', 404
@@ -439,11 +447,7 @@ def check_password(alias):
             ip_limiter.add_failed_attempt(client_info)
 
     else:
-        dir_obj = None
-        for d in config.shared_dirs.values():
-            if d.alias == alias:
-                dir_obj = d
-                break
+        dir_obj = get_dir_obj(alias)
 
         if dir_obj and password == dir_obj.password or password == config.admin_password:
             session[f'auth_{alias}'] = True
@@ -463,7 +467,7 @@ def list_dir(dirname):
     base_dir = dirname.split('/')[0]
 
     # 查找目录对象（修复重复循环问题）
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+    dir_obj = get_dir_obj(base_dir)
 
     if not dir_obj:
         return render_template('error.html',
@@ -495,7 +499,7 @@ def list_dir(dirname):
     for part in dirname.split('/'):
         current += f"/{part}" if current else part
         # Find directory object by alias if it exists
-        dir_info = next((d for d in config.shared_dirs.values() if d.alias == part), None)
+        dir_info = get_dir_obj(part)
         nav_path.append({
             'name': part,
             'path': current,
@@ -542,7 +546,7 @@ def search_files(alias):
     timeout = int(request.args.get('timeout', 10))  # 默认超时10秒
 
     # 从config获取目录对象
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
 
     if not dir_obj:
         return jsonify({'error': 'Directory not found'}), 404
@@ -627,7 +631,7 @@ def search_files(alias):
 @check_auth_timestamp
 def preview_file(filepath):
     base_dir = filepath.split('/')[0]
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+    dir_obj = get_dir_obj(base_dir)
     if not dir_obj:
         return '目录不存在', 404
     access_resp = require_dir_access(dir_obj, base_dir=base_dir, is_api=request.headers.get('X-Requested-With') == 'XMLHttpRequest')
@@ -713,7 +717,7 @@ def batch_download():
         base_dir = file['path'].split('/')[0]
         if base_dir in checked_aliases:
             continue
-        dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+        dir_obj = get_dir_obj(base_dir)
         if dir_obj:
             access_resp = require_dir_access(dir_obj, base_dir=base_dir, is_api=True)
             if access_resp:
@@ -725,7 +729,7 @@ def batch_download():
     with zipfile.ZipFile(temp_zip.name, 'w') as zf:
         for file in files:
             base_dir = file['path'].split('/')[0]
-            dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+            dir_obj = get_dir_obj(base_dir)
             if dir_obj:
                 full_path = os.path.join(dir_obj.path, *file['path'].split('/')[1:])
                 if os.path.exists(full_path):
@@ -777,11 +781,7 @@ def download(filepath):
 
     dirname, filename = parts
 
-    dir_obj = None
-    for d in config.shared_dirs.values():
-        if d.alias == dirname:
-            dir_obj = d
-            break
+    dir_obj = get_dir_obj(dirname)
 
     if not dir_obj:
         flask_app.logger.error(f"Directory not found: {dirname}")
@@ -851,7 +851,7 @@ def upload_file(alias):
     if chunks < 1 or chunk_number < 0 or chunk_number >= chunks:
         return "Invalid chunk index", 400
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return "Directory not found", 404
 
@@ -963,7 +963,7 @@ def make_directory(alias):
     if validation_error:
         return validation_error, 400
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return "Directory not found", 404
 
@@ -1002,7 +1002,7 @@ def delete_item(alias):
     current_path = urllib.parse.unquote(current_path)
     name = urllib.parse.unquote(name)
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return "Directory not found", 404
 
@@ -1046,7 +1046,7 @@ def batch_delete_items(alias):
     if not items:
         return jsonify({'error': '未选择任何项目'}), 400
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return jsonify({'error': '目录不存在'}), 404
 
@@ -1129,7 +1129,7 @@ def rename_item(alias):
         if validation_error:
             return validation_error, 400
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return "Directory not found", 404
 
@@ -1161,7 +1161,7 @@ def get_directories(alias):
     """移动文件获取目录结构的端点"""
     # 权限检查已由装饰器处理
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return "Directory not found", 404
 
@@ -1202,7 +1202,7 @@ def move_items(alias):
     target_path = urllib.parse.unquote(target_path)
     current_path = urllib.parse.unquote(current_path)
 
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == alias), None)
+    dir_obj = get_dir_obj(alias)
     if not dir_obj:
         return "Directory not found", 404
 
@@ -1340,11 +1340,7 @@ def dir_admin_login():
         return 'Missing parameters', 400
 
     # 查找对应的目录配置
-    dir_obj = None
-    for d in config.shared_dirs.values():
-        if d.alias == dirname:
-            dir_obj = d
-            break
+    dir_obj = get_dir_obj(dirname)
 
     if not dir_obj:
         return 'Directory not found', 404
@@ -1442,7 +1438,7 @@ def dir_admin_2fa():
                                scope='dir_admin', dirname=dirname)
 
     code = request.form.get('code', '').strip()
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == dirname), None)
+    dir_obj = get_dir_obj(dirname)
     if dir_obj and _verify_totp(getattr(dir_obj, 'totp_secret', ''), code):
         session.pop('pending_2fa', None)
         session[f'dir_admin_{dirname}'] = True
@@ -1755,7 +1751,7 @@ def create_share():
     expire_days = request.json.get('expire_days', '7')
 
     base_dir = path.split('/')[0]
-    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+    dir_obj = get_dir_obj(base_dir)
 
     if not dir_obj:
         return jsonify({'error': '目录不存在'}), 404
