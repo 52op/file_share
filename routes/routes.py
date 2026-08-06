@@ -179,6 +179,9 @@ def require_dir_access(dir_obj, base_dir=None, alias=None, is_api=False):
     返回响应对象表示需跳转/拒绝；返回 None 表示放行。
     """
     key_alias = alias or base_dir or dir_obj.alias
+    # 超级管理员已登录 → 直接放行，无需目录密码或全局密码
+    if session.get('admin'):
+        return None
     if getattr(dir_obj, 'password', None):
         if not session.get(f'auth_{key_alias}'):
             if is_api:
@@ -401,7 +404,7 @@ def check_session_timeout():
 @check_auth_timestamp  # 添加装饰器 用于实时修改密码后的一个校验新密码
 def index():
     # 检查全局密码验证
-    if config.global_password and not session.get('auth'):
+    if config.global_password and not session.get('auth') and not session.get('admin'):
         return render_template('global_password.html', alias='global', pageMark=f'全局密码')
 
     # 只返回必要的信息
