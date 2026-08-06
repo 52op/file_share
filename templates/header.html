@@ -72,7 +72,6 @@
                     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
                     "Helvetica Neue", Arial, sans-serif;
                 background-color: #f8f9fa;
-                transition: opacity 0.2s ease-in-out; /* 添加过渡效果 */
             }
             .navbar {
                 margin-bottom: 20px;
@@ -165,8 +164,14 @@
             // 监听主题样式加载完成事件
             themeLink.onload = () => {
                 // 隐藏加载中效果
-                document.getElementById("loading").style.display = "none";
+                const loading = document.getElementById("loading");
+                if (loading) loading.style.display = "none";
             };
+            // 兜底：即使主题样式加载异常也隐藏遮罩，避免永久白屏
+            setTimeout(() => {
+                const loading = document.getElementById("loading");
+                if (loading) loading.style.display = "none";
+            }, 5000);
         </script>
 
         <!-- 其他样式文件 -->
@@ -276,24 +281,65 @@
 
         {% block content %}{% endblock %}
         <script>
-            function switchTheme(themeUrl, themeName) {
+            function showLoading() {
+                const loading = document.getElementById("loading");
+                if (loading) loading.style.display = "flex";
+            }
+
+            function hideLoading() {
+                const loading = document.getElementById("loading");
+                if (loading) loading.style.display = "none";
+            }
+
+            // 预下载新主题 CSS，加载完成后真正切换并隐藏遮罩
+            function preloadTheme(themeUrl, themeName, callback) {
+                const link = document.createElement("link");
+                link.rel = "preload";
+                link.as = "style";
+                link.href = themeUrl;
+                link.onload = function () {
+                    document.head.removeChild(link);
+                    callback();
+                };
+                link.onerror = function () {
+                    document.head.removeChild(link);
+                    callback();
+                };
+                document.head.appendChild(link);
+            }
+
+            function applyTheme(themeUrl, themeName) {
                 const themeLink = document.getElementById("bootstrapTheme");
                 if (themeLink) {
                     themeLink.href = themeUrl;
                     localStorage.setItem(THEME_KEY, themeUrl);
                     localStorage.setItem(THEME_NAME_KEY, themeName);
-                    document.getElementById(
+                    const dropdown = document.getElementById(
                         "themeSelectorDropdown",
-                    ).textContent = themeName;
-
-                    // 添加过渡效果
-                    document.body.style.opacity = "0";
-                    setTimeout(() => {
-                        document.body.style.opacity = "1";
-                    }, 100);
-                } else {
-                    console.error("Theme link element not found.");
+                    );
+                    if (dropdown) dropdown.textContent = themeName;
                 }
+            }
+
+            function switchTheme(themeUrl, themeName) {
+                const themeLink = document.getElementById("bootstrapTheme");
+                if (!themeLink) {
+                    console.error("Theme link element not found.");
+                    return;
+                }
+                // 显示遮罩，避免旧样式失效后新样式加载期间的纯文字闪烁
+                showLoading();
+                let done = false;
+                const finish = function () {
+                    if (done) return;
+                    done = true;
+                    applyTheme(themeUrl, themeName);
+                    hideLoading();
+                };
+                // 预下载新主题，onload 后再真正切换
+                preloadTheme(themeUrl, themeName, finish);
+                // 超时兜底：防止主题文件 404/网络异常导致遮罩一直显示
+                setTimeout(finish, 3000);
             }
 
             function generateThemeOptions(themes) {
