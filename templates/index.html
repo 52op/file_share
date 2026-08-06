@@ -700,8 +700,14 @@
         // 生成新TOTP密钥
         function generateTotp() {
             const secret = randomBase32();
+            const enabledEl = document.getElementById('adminTotpEnabled');
+            const onlyEl = document.getElementById('adminTotpOnly');
             document.getElementById('adminTotpSecret').value = secret;
-            document.getElementById('adminTotpEnabled').checked = true;
+            enabledEl.checked = true;
+            if (onlyEl) {
+                onlyEl.disabled = false;
+                onlyEl.checked = false;
+            }
             document.getElementById('totpLinkText').textContent =
                 '已生成新密钥，请复制绑定链接在身份验证器App中添加。';
         }
@@ -714,18 +720,36 @@
                 return;
             }
             const link = 'https://2fa.it0731.cn/tok/' + secret;
+            let copied = false;
+            // 方案一：Clipboard API（仅 HTTPS/localhost 可用）
             try {
-                await navigator.clipboard.writeText(link);
-                alert('绑定链接已复制：\n' + link);
-            } catch (e) {
-                // 剪贴板API不可用时降级
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(link);
+                    copied = true;
+                }
+            } catch (e) { /* 降级到方案二 */ }
+
+            // 方案二：隐藏textarea + execCommand 兼容模式
+            if (!copied) {
                 const ta = document.createElement('textarea');
                 ta.value = link;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
                 document.body.appendChild(ta);
+                ta.focus();
                 ta.select();
-                document.execCommand('copy');
+                try {
+                    copied = document.execCommand('copy');
+                } catch (e) {
+                    copied = false;
+                }
                 document.body.removeChild(ta);
+            }
+
+            if (copied) {
                 alert('绑定链接已复制：\n' + link);
+            } else {
+                alert('复制失败，请手动复制绑定链接：\n' + link);
             }
         }
 
