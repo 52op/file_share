@@ -413,7 +413,9 @@ def index():
         }
         for dir_obj in config.shared_dirs.values()
     ]
-    return render_template('index.html', dirs=dirs, pageMark=f'首页')
+    return render_template('index.html', dirs=dirs, pageMark=f'首页',
+                           admin_totp_enabled=bool(config.admin_totp_secret),
+                           admin_totp_only=bool(getattr(config, 'admin_totp_only', False)))
 
 
 @flask_app.route('/check_password/<path:alias>', methods=['POST'])
@@ -521,7 +523,9 @@ def list_dir(dirname):
                            nav_path=nav_path,
                            current_dir=base_dir,
                            current_path=dirname,
-                           dir_obj=dir_obj, pageMark=f'{base_dir}目录浏览')
+                           dir_obj=dir_obj, pageMark=f'{base_dir}目录浏览',
+                           admin_totp_enabled=bool(config.admin_totp_secret),
+                           admin_totp_only=bool(getattr(config, 'admin_totp_only', False)))
 
 
 @flask_app.route('/api/search/<alias>')
@@ -1270,20 +1274,46 @@ def _verify_totp(secret, code):
 @check_ip_limit
 def admin_login():
     client_info = f"{request.remote_addr}"
-    if request.form.get('password') == config.admin_password:
-        # 密码正确，先检查是否启用TOTP两步验证
-        if config.admin_totp_secret:
-            return _start_totp_flow('admin')
-        session['admin'] = True
-        session['admin_time'] = time.time()
-        ip_limiter.reset(client_info)  # 登录成功后重置计数
-        flask_app.logger.info(f"{client_info} 管理员登录成功")
-        return redirect(request.referrer or url_for('index'))  # 优先跳转到来源页面
+    password = request.form.get('password', '')
+    code = (request.form.get('code', '') or '').strip()
+    totp_enabled = bool(config.admin_totp_secret)
+    totp_only = bool(getattr(config, 'admin_totp_only', False))
 
-    # 记录失败次数
-    ip_limiter.add_failed_attempt(client_info)
-    flask_app.logger.warning(f"{client_info} 管理员登录失败")
-    return 'Invalid password', 401
+    if totp_enabled and totp_only:
+        # 仅凭验证码登录
+        if _verify_totp(config.admin_totp_secret, code):
+            session['admin'] = True
+            session['admin_time'] = time.time()
+            ip_limiter.reset(client_info)
+            flask_app.logger.info(f"{client_info} 管理员TOTP免密登录成功")
+            return redirect(request.referrer or url_for('index'))
+        ip_limiter.add_failed_attempt(client_info)
+        flask_app.logger.warning(f"{client_info} 管理员TOTP免密登录失败")
+        return 'Invalid verification code', 401
+
+    if password != config.admin_password:
+        ip_limiter.add_failed_attempt(client_info)
+        flask_app.logger.warning(f"{client_info} 管理员登录失败")
+        return 'Invalid password', 401
+
+    if totp_enabled:
+        # 两步验证：需密码+验证码同时正确
+        if _verify_totp(config.admin_totp_secret, code):
+            session['admin'] = True
+            session['admin_time'] = time.time()
+            ip_limiter.reset(client_info)
+            flask_app.logger.info(f"{client_info} 管理员登录成功(含TOTP)")
+            return redirect(request.referrer or url_for('index'))
+        ip_limiter.add_failed_attempt(client_info)
+        flask_app.logger.warning(f"{client_info} 管理员TOTP验证失败")
+        return 'Invalid verification code', 401
+
+    # 密码正确且未启用TOTP，直接登录
+    session['admin'] = True
+    session['admin_time'] = time.time()
+    ip_limiter.reset(client_info)  # 登录成功后重置计数
+    flask_app.logger.info(f"{client_info} 管理员登录成功")
+    return redirect(request.referrer or url_for('index'))  # 优先跳转到来源页面
 
 
 @flask_app.route('/admin/logout')
@@ -1299,10 +1329,11 @@ def admin_logout():
 def dir_admin_login():
     """目录管理员登录"""
     client_info = f"{request.remote_addr}"
-    password = request.form.get('password')
+    password = request.form.get('password', '')
     dirname = request.form.get('dirname')
+    code = (request.form.get('code', '') or '').strip()
 
-    if not dirname or not password:
+    if not dirname:
         return 'Missing parameters', 400
 
     # 查找对应的目录配置
@@ -1315,21 +1346,45 @@ def dir_admin_login():
     if not dir_obj:
         return 'Directory not found', 404
 
-    # 检查密码
-    if dir_obj.admin_password and (password == dir_obj.admin_password or password == config.admin_password):
-        # 密码正确，先检查该目录管理员是否启用TOTP两步验证
-        if getattr(dir_obj, 'totp_secret', ''):
-            return _start_totp_flow('dir_admin', dirname)
-        session[f'dir_admin_{dirname}'] = True
-        session[f'dir_admin_time_{dirname}'] = time.time()
-        ip_limiter.reset(client_info)  # 登录成功后重置计数
-        flask_app.logger.info(f"{client_info} 目录管理员登录成功: {dirname}")
-        return redirect(request.referrer or url_for('list_dir', dirname=dirname))
+    totp_secret = getattr(dir_obj, 'totp_secret', '')
+    totp_only = bool(getattr(dir_obj, 'totp_only', False))
 
-    # 记录失败次数
-    ip_limiter.add_failed_attempt(client_info)
-    flask_app.logger.warning(f"{client_info} 目录管理员登录失败: {dirname}")
-    return 'Invalid password', 401
+    if totp_secret and totp_only:
+        # 仅凭验证码登录
+        if _verify_totp(totp_secret, code):
+            session[f'dir_admin_{dirname}'] = True
+            session[f'dir_admin_time_{dirname}'] = time.time()
+            ip_limiter.reset(client_info)
+            flask_app.logger.info(f"{client_info} 目录管理员TOTP免密登录成功: {dirname}")
+            return redirect(request.referrer or url_for('list_dir', dirname=dirname))
+        ip_limiter.add_failed_attempt(client_info)
+        flask_app.logger.warning(f"{client_info} 目录管理员TOTP免密登录失败: {dirname}")
+        return 'Invalid verification code', 401
+
+    # 检查密码
+    if not (dir_obj.admin_password and (password == dir_obj.admin_password or password == config.admin_password)):
+        # 记录失败次数
+        ip_limiter.add_failed_attempt(client_info)
+        flask_app.logger.warning(f"{client_info} 目录管理员登录失败: {dirname}")
+        return 'Invalid password', 401
+
+    if totp_secret:
+        # 两步验证：需密码+验证码同时正确
+        if _verify_totp(totp_secret, code):
+            session[f'dir_admin_{dirname}'] = True
+            session[f'dir_admin_time_{dirname}'] = time.time()
+            ip_limiter.reset(client_info)  # 登录成功后重置计数
+            flask_app.logger.info(f"{client_info} 目录管理员登录成功(含TOTP): {dirname}")
+            return redirect(request.referrer or url_for('list_dir', dirname=dirname))
+        ip_limiter.add_failed_attempt(client_info)
+        flask_app.logger.warning(f"{client_info} 目录管理员TOTP验证失败: {dirname}")
+        return 'Invalid verification code', 401
+
+    session[f'dir_admin_{dirname}'] = True
+    session[f'dir_admin_time_{dirname}'] = time.time()
+    ip_limiter.reset(client_info)  # 登录成功后重置计数
+    flask_app.logger.info(f"{client_info} 目录管理员登录成功: {dirname}")
+    return redirect(request.referrer or url_for('list_dir', dirname=dirname))
 
 
 @flask_app.route('/dir-admin/logout/<dirname>')

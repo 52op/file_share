@@ -368,13 +368,14 @@ class ToolTip:
 
 
 class ShareDirectory:
-    def __init__(self, path, alias="", password="", desc="", admin_password="", totp_secret=""):
+    def __init__(self, path, alias="", password="", desc="", admin_password="", totp_secret="", totp_only=False):
         self.path = path
         self.alias = alias
         self.password = password
         self.desc = desc
         self.admin_password = admin_password  # 新增：目录管理密码
         self.totp_secret = totp_secret  # 目录管理员的 TOTP 双因素密钥（空=未启用）
+        self.totp_only = totp_only  # 目录管理员启用TOTP时，仅凭验证码登录（免密）
         # 处理分区根目录
         if path.endswith(":\\"):
             self.name = f"drive_{path[0].lower()}"
@@ -391,6 +392,7 @@ class ShareDirectory:
             "desc": self.desc,
             "admin_password": _c.encrypt(self.admin_password),  # 新增：保存目录管理密码
             "totp_secret": _c.encrypt(self.totp_secret),
+            "totp_only": self.totp_only,
         }
 
     @staticmethod
@@ -405,6 +407,7 @@ class ShareDirectory:
             _c.decrypt(data.get("totp_secret", "")),  # 从配置文件恢复目录管理员 TOTP 密钥
         )
         dir_obj.name = data.get("name", dir_obj.name)  # 恢复唯一标识名
+        dir_obj.totp_only = data.get("totp_only", False)
         return dir_obj
 
 
@@ -434,6 +437,7 @@ class Config:
         self.global_password = ""
         self.admin_password = "admin"  # 默认管理员密码
         self.admin_totp_secret = ""  # 超级管理员的 TOTP 双因素密钥（空=未启用）
+        self.admin_totp_only = False  # 超级管理员启用TOTP时，仅凭验证码登录（免密）
         self.port = 12345
         self.dark_theme = False  # Add theme setting
         self.log_to_file = False  # Add logging setting
@@ -475,6 +479,7 @@ class Config:
             if self.admin_password
             else "admin",  # 修复：移除对全局config的引用
             "admin_totp_secret": get_crypto().encrypt(self.admin_totp_secret),
+            "admin_totp_only": self.admin_totp_only,
             "port": self.port,
             "dark_theme": self.dark_theme,
             "log_to_file": self.log_to_file,
@@ -517,6 +522,7 @@ class Config:
                 self.global_password = get_crypto().decrypt(data.get("global_password", ""))
                 self.admin_password = get_crypto().decrypt(data.get("admin_password", "admin"))
                 self.admin_totp_secret = get_crypto().decrypt(data.get("admin_totp_secret", ""))
+                self.admin_totp_only = data.get("admin_totp_only", False)
                 self.port = data.get("port", 12345)
                 self.dark_theme = data.get("dark_theme", False)
                 self.log_to_file = data.get("log_to_file", False)
@@ -684,6 +690,10 @@ class DirectoryDialog(ttk.Toplevel):
         ttk.Button(totp_frame, text="复制链接", width=8,
                    command=lambda: DirectoryDialog.copy_totp_link(
                        self.winfo_toplevel(), self.totp_secret_var.get())).pack(side=LEFT, padx=3)
+        self.totp_only_var = tk.BooleanVar(
+            value=bool(dir_obj.totp_only) if dir_obj else False)
+        ttk.Checkbutton(totp_frame, text="仅验证码登录(免密)",
+                        variable=self.totp_only_var).pack(side=LEFT, padx=5)
 
         # 添加描述输入框
         desc_frame = ttk.Frame(self)
@@ -834,6 +844,7 @@ class DirectoryDialog(ttk.Toplevel):
             self.desc_var.get(),
             self.admin_password_var.get(),  # 新增：包含目录管理密码
             self.totp_secret_var.get().strip() if self.totp_enabled_var.get() else "",
+            self.totp_only_var.get(),  # 目录管理员仅验证码登录(免密)
         )
         self.result.name = dir_name  # 设置唯一标识名
         self.destroy()
@@ -1824,6 +1835,10 @@ class FileShareApp:
                    command=lambda: self.gen_totp_secret(self.admin_totp_secret_var)).pack(side=LEFT)
         ttk.Button(admin_totp_frame, text="复制链接", width=8,
                    command=lambda: self.copy_totp_link(self.admin_totp_secret_var.get())).pack(side=LEFT, padx=3)
+        self.admin_totp_only_var = tk.BooleanVar(
+            value=bool(getattr(config, 'admin_totp_only', False)))
+        ttk.Checkbutton(admin_totp_frame, text="仅验证码登录(免密)",
+                        variable=self.admin_totp_only_var).pack(side=LEFT, padx=5)
 
         # 端口设置
         port_frame = ttk.Frame(settings_container)
@@ -2324,6 +2339,9 @@ class FileShareApp:
                 config.admin_totp_secret = self.admin_totp_secret_var.get().strip()
             else:
                 config.admin_totp_secret = ""
+        # 保存超级管理员 TOTP 仅验证码登录(免密) 开关
+        if hasattr(self, 'admin_totp_only_var'):
+            config.admin_totp_only = self.admin_totp_only_var.get()
 
         config.port = int(self.port_var.get() or 12345)
         config.cleanup_time = self.cleanup_time_var.get()

@@ -383,11 +383,29 @@
                 </div>
                 <div class="modal-body">
                     <form id="adminLoginForm" onsubmit="return handleAdminLogin(event)">
+                        {% if admin_totp_enabled and admin_totp_only %}
+                        <div class="mb-3">
+                            <label class="form-label">动态验证码</label>
+                            <input type="text" class="form-control" id="adminCode" placeholder="请输入6位验证码"
+                                   maxlength="6" pattern="[0-9]*" inputmode="numeric" required>
+                            <div class="form-text">该账号已启用两步验证，请输入验证器中的6位动态验证码</div>
+                            <div class="invalid-feedback" id="loginError"></div>
+                        </div>
+                        {% else %}
                         <div class="mb-3">
                             <label class="form-label">超级管理密码</label>
                             <input type="password" class="form-control" id="adminPassword" required>
                             <div class="invalid-feedback" id="loginError"></div>
                         </div>
+                        {% if admin_totp_enabled %}
+                        <div class="mb-3">
+                            <label class="form-label">动态验证码</label>
+                            <input type="text" class="form-control" id="adminCode" placeholder="请输入6位验证码"
+                                   maxlength="6" pattern="[0-9]*" inputmode="numeric" required>
+                            <div class="form-text">请同时输入验证器中的6位动态验证码</div>
+                        </div>
+                        {% endif %}
+                        {% endif %}
                         <button type="submit" class="btn btn-primary">登录</button>
                     </form>
                 </div>
@@ -406,6 +424,17 @@
                 <div class="modal-body">
                     <form id="dirAdminLoginForm" onsubmit="return handleDirAdminLogin(event)">
                         <input type="hidden" id="dirAdminDirname" value="{{ current_dir }}">
+                        {% set dir_totp_enabled = dir_obj.totp_secret if dir_obj else '' %}
+                        {% set dir_totp_only = dir_obj.totp_only if dir_obj else False %}
+                        {% if dir_totp_enabled and dir_totp_only %}
+                        <div class="mb-3">
+                            <label class="form-label">动态验证码</label>
+                            <input type="text" class="form-control" id="dirAdminCode" placeholder="请输入6位验证码"
+                                   maxlength="6" pattern="[0-9]*" inputmode="numeric" required>
+                            <div class="form-text">该目录已启用两步验证，请输入验证器中的6位动态验证码</div>
+                            <div class="invalid-feedback" id="dirLoginError"></div>
+                        </div>
+                        {% else %}
                         <div class="mb-3">
                             <label class="form-label">目录管理密码</label>
                             <input type="password" class="form-control" id="dirAdminPassword" required>
@@ -414,6 +443,15 @@
                                 <i class="bi bi-info-circle"></i> 输入此目录的管理密码以获取管理权限
                             </div>
                         </div>
+                        {% if dir_totp_enabled %}
+                        <div class="mb-3">
+                            <label class="form-label">动态验证码</label>
+                            <input type="text" class="form-control" id="dirAdminCode" placeholder="请输入6位验证码"
+                                   maxlength="6" pattern="[0-9]*" inputmode="numeric" required>
+                            <div class="form-text">请同时输入验证器中的6位动态验证码</div>
+                        </div>
+                        {% endif %}
+                        {% endif %}
                         <button type="submit" class="btn btn-warning">登录</button>
                     </form>
                 </div>
