@@ -318,6 +318,10 @@
                                         <input class="form-check-input" type="checkbox" id="adminTotpEnabled" name="admin_totp_enabled">
                                         <label class="form-check-label" for="adminTotpEnabled">启用后管理员登录需输入6位动态验证码</label>
                                     </div>
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input" type="checkbox" id="adminTotpOnly" name="admin_totp_only">
+                                        <label class="form-check-label" for="adminTotpOnly">启用后登录只需输入6位动态验证码（免密码）</label>
+                                    </div>
                                     <div class="input-group">
                                         <input type="text" class="form-control" id="adminTotpSecret" name="admin_totp_secret"
                                                placeholder="TOTP密钥" readonly>
@@ -659,6 +663,16 @@
             if (settingsModalEl) {
                 settingsModalEl.addEventListener('shown.bs.modal', loadTotpState);
             }
+
+            // TOTP启用状态变化时联动"仅验证码登录"开关
+            const adminTotpEnabledEl = document.getElementById('adminTotpEnabled');
+            const adminTotpOnlyEl = document.getElementById('adminTotpOnly');
+            if (adminTotpEnabledEl && adminTotpOnlyEl) {
+                adminTotpEnabledEl.addEventListener('change', function() {
+                    adminTotpOnlyEl.disabled = !this.checked;
+                    if (!this.checked) adminTotpOnlyEl.checked = false;
+                });
+            }
         });
 
         // 加载超管TOTP设置状态
@@ -670,8 +684,13 @@
                 const enabledEl = document.getElementById('adminTotpEnabled');
                 const secretEl = document.getElementById('adminTotpSecret');
                 const linkText = document.getElementById('totpLinkText');
+                const totpOnlyEl = document.getElementById('adminTotpOnly');
                 enabledEl.checked = data.enabled;
                 secretEl.value = data.secret || '';
+                if (totpOnlyEl) {
+                    totpOnlyEl.checked = !!(data.totp_only && data.enabled);
+                    totpOnlyEl.disabled = !data.enabled;
+                }
                 if (data.enabled && data.link) {
                     linkText.textContent = '已启用。绑定链接：' + data.link;
                 }
