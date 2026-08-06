@@ -65,6 +65,69 @@ jobs:
           Get-Item "dist/file_share.exe" | Format-List FullName,Length,LastWriteTime
           Get-Item "dist/main/file_share.exe" | Format-List FullName,Length,LastWriteTime
 
+      - name: Generate changelog from git
+        shell: pwsh
+        run: |
+          # 获取当前 tag 名称
+          $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
+          # 找到上一个版本 tag（排除当前 tag）
+          $prevTag = git describe --tags --abbrev=0 "$tag^" 2>$null
+          if (-not $prevTag) {
+            $prevTag = (git tag --sort=-v:refname | Where-Object { $_ -ne $tag } | Select-Object -First 1)
+          }
+          if (-not $prevTag) {
+            $prevTag = ''
+          }
+
+          $body = @"
+          ## 文件分享工具 - Windows 版本
+
+          ### 📦 下载选项：
+
+          **1. 单文件版本** (`file_share.exe`)
+          - 适用于 Windows 7 及以上系统
+          - 一键运行，无需解压
+          - 适合快速部署和使用
+
+          **2. 压缩包版本** (`file_share.zip`)
+          - 解压后运行 `file_share.exe`
+          - 优点：方便修改模板文件（templates/）和静态资源（static/）
+          - 适合需要自定义界面或功能的用户
+
+          ### 💡 使用说明：
+          - 单文件版本：直接双击运行即可
+          - 压缩包版本：解压后双击 `file_share.exe` 运行
+          - 首次运行会自动配置防火墙规则
+          - 支持系统托盘后台运行
+
+          ### 🔧 系统要求：
+          - Windows 7 SP1 及以上版本
+          - .NET Framework 4.5+（通常系统已内置）
+
+          FULLCHANGELOG
+          "@
+
+          # 生成变更日志（从上一版本到当前版本的提交）
+          if ($prevTag) {
+            $range = "$prevTag..$tag"
+            $logLines = git log --pretty=format:'%h %s' $range
+            $changelog = @()
+            foreach ($line in $logLines) {
+              $changelog += "- $line"
+            }
+            if ($changelog.Count -gt 0) {
+              $changelogBlock = "`n### 📝 本次更新内容：`n" + ($changelog -join "`n")
+              $body = $body -replace 'FULLCHANGELOG', $changelogBlock
+            } else {
+              $body = $body -replace 'FULLCHANGELOG', ''
+            }
+          } else {
+            $body = $body -replace 'FULLCHANGELOG', ''
+          }
+
+          # 写入 release body 文件
+          $body | Set-Content -Path release_body.md -Encoding UTF8
+
       - name: Package artifacts
         shell: pwsh
         run: |
@@ -75,33 +138,9 @@ jobs:
       - name: Create Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          body: |
-            ## 文件分享工具 - Windows 版本
-            
-            ### 📦 下载选项：
-            
-            **1. 单文件版本** (`file_share.exe`)
-            - 适用于 Windows 7 及以上系统
-            - 一键运行，无需解压
-            - 适合快速部署和使用
-            
-            **2. 压缩包版本** (`file_share.zip`)
-            - 解压后运行 `file_share.exe`
-            - 优点：方便修改模板文件（templates/）和静态资源（static/）
-            - 适合需要自定义界面或功能的用户
-            
-            ### 💡 使用说明：
-            - 单文件版本：直接双击运行即可
-            - 压缩包版本：解压后双击 `file_share.exe` 运行
-            - 首次运行会自动配置防火墙规则
-            - 支持系统托盘后台运行
-            
-            ### 🔧 系统要求：
-            - Windows 7 SP1 及以上版本
-            - .NET Framework 4.5+（通常系统已内置）
+          body_path: release_body.md
           files: |
             release/file_share.exe
             release/file_share.zip
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
