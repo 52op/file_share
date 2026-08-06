@@ -45,3 +45,26 @@ def test_load_roundtrip_encrypted(tmp_path):
     cfg.save()
     loaded = _load_config(tmp_path)
     assert loaded.admin_password == "secret123"
+
+
+def test_load_migrates_plaintext_to_encrypted(tmp_path):
+    """旧版明文配置 load 后应自动迁移为加密格式。"""
+    cfg_file = tmp_path / "share_config.json"
+    plain_data = {
+        "shared_dirs": {},
+        "global_password": "oldglob",
+        "admin_password": "oldadmin",
+        "admin_totp_secret": "",
+        "port": 12345,
+    }
+    cfg_file.write_text(
+        json.dumps(plain_data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    cfg = _load_config(tmp_path)
+    assert cfg.admin_password == "oldadmin"
+    assert cfg.global_password == "oldglob"
+    # 迁移后磁盘上应为加密格式
+    raw = cfg_file.read_text(encoding="utf-8")
+    assert '"admin_password": "enc:' in raw
+    assert '"global_password": "enc:' in raw

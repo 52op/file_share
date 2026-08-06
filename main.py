@@ -551,6 +551,16 @@ class Config:
                 # 确保logo目录存在
                 os.makedirs(self.logo_dir, exist_ok=True)
 
+                # 旧版明文密码自动迁移为加密格式（仅在本次加载含明文密码时触发）
+                _migrate = False
+                for _field in ("global_password", "admin_password", "admin_totp_secret"):
+                    _val = data.get(_field)
+                    if _val and not str(_val).startswith("enc:"):
+                        _migrate = True
+                        break
+                if _migrate:
+                    self.save()
+
 
 config = Config()
 
