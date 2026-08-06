@@ -1248,10 +1248,11 @@ def move_items(alias):
 
 
 def _start_totp_flow(scope, dirname=None):
-    """记录待验证的TOTP会话，返回对应的验证页响应。scope: 'admin' 或 'dir_admin'"""
+    """记录待验证的TOTP会话，并跳转到对应的验证页。scope: 'admin' 或 'dir_admin'"""
     session['pending_2fa'] = {'scope': scope, 'dirname': dirname, 'time': time.time()}
-    return render_template('totp_verify.html',
-                           pageMark='两步验证', scope=scope, dirname=dirname)
+    if scope == 'admin':
+        return redirect(url_for('admin_2fa'))
+    return redirect(url_for('dir_admin_2fa'))
 
 
 def _verify_totp(secret, code):
@@ -1340,7 +1341,7 @@ def dir_admin_logout(dirname):
     return redirect(url_for('list_dir', dirname=dirname))
 
 
-@flask_app.route('/admin/2fa', methods=['POST'])
+@flask_app.route('/admin/2fa', methods=['GET', 'POST'])
 @check_ip_limit
 def admin_2fa():
     """超级管理员TOTP两步验证"""
@@ -1348,6 +1349,10 @@ def admin_2fa():
     pending = session.get('pending_2fa')
     if not pending or pending.get('scope') != 'admin':
         return render_template('error.html', error_code=401, message="请先输入管理密码", pageMark='两步验证'), 401
+
+    if request.method == 'GET':
+        return render_template('totp_verify.html', pageMark='两步验证',
+                               scope='admin', dirname=None)
 
     code = request.form.get('code', '').strip()
     if _verify_totp(config.admin_totp_secret, code):
@@ -1363,7 +1368,7 @@ def admin_2fa():
                            scope='admin', dirname=None, error='验证码错误或已过期'), 401
 
 
-@flask_app.route('/dir-admin/2fa', methods=['POST'])
+@flask_app.route('/dir-admin/2fa', methods=['GET', 'POST'])
 @check_ip_limit
 def dir_admin_2fa():
     """目录管理员TOTP两步验证"""
@@ -1373,6 +1378,11 @@ def dir_admin_2fa():
         return render_template('error.html', error_code=401, message="请先输入目录管理密码", pageMark='两步验证'), 401
 
     dirname = pending.get('dirname')
+
+    if request.method == 'GET':
+        return render_template('totp_verify.html', pageMark='两步验证',
+                               scope='dir_admin', dirname=dirname)
+
     code = request.form.get('code', '').strip()
     dir_obj = next((d for d in config.shared_dirs.values() if d.alias == dirname), None)
     if dir_obj and _verify_totp(getattr(dir_obj, 'totp_secret', ''), code):

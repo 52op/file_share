@@ -16,6 +16,11 @@
                     method: 'POST',
                     body: formData
                 });
+                if (response.redirected && response.url.includes('/2fa')) {
+                    // 启用了两步验证，跳转到验证码页面
+                    window.location.href = response.url;
+                    return;
+                }
                 if (response.ok) {
                     location.reload();
                 } else {
@@ -54,6 +59,11 @@ async function handleDirAdminLogin(event) {
             method: 'POST',
             body: formData
         });
+        if (response.redirected && response.url.includes('/2fa')) {
+            // 启用了两步验证，跳转到验证码页面
+            window.location.href = response.url;
+            return;
+        }
         if (response.ok) {
             location.reload();
         } else {

@@ -640,8 +640,10 @@ class DirectoryDialog(ttk.Toplevel):
         self.pwd_entry = ttk.Entry(pwd_frame, textvariable=self.password_var, show="*")
         self.pwd_entry.pack(side=LEFT, fill=X, expand=YES)
         if show_password_toggle_enabled():
-            ttk.Button(pwd_frame, text="显示", width=6,
-                       command=lambda: self.toggle_password_visibility(self.pwd_entry)).pack(side=LEFT, padx=2)
+            self.show_pwd_btn = ttk.Button(pwd_frame, text="👁", width=3,
+                                           command=lambda: self.toggle_password_visibility(self.pwd_entry, self.show_pwd_btn))
+            self.show_pwd_btn.pack(side=LEFT, padx=2)
+            ToolTip(self.show_pwd_btn, "显示/隐藏密码")
 
         # 新增：目录管理密码设置
         admin_pwd_frame = ttk.Frame(self)
@@ -655,8 +657,10 @@ class DirectoryDialog(ttk.Toplevel):
         )
         self.admin_pwd_entry.pack(side=LEFT, fill=X, expand=YES)
         if show_password_toggle_enabled():
-            ttk.Button(admin_pwd_frame, text="显示", width=6,
-                       command=lambda: self.toggle_password_visibility(self.admin_pwd_entry)).pack(side=LEFT, padx=2)
+            self.show_admin_pwd_btn = ttk.Button(admin_pwd_frame, text="👁", width=3,
+                                                 command=lambda: self.toggle_password_visibility(self.admin_pwd_entry, self.show_admin_pwd_btn))
+            self.show_admin_pwd_btn.pack(side=LEFT, padx=2)
+            ToolTip(self.show_admin_pwd_btn, "显示/隐藏密码")
         ToolTip(
             self.admin_pwd_entry,
             "设置此目录的管理密码，拥有此密码的用户可以管理此目录\n留空表示只有超级管理员可以管理",
@@ -837,9 +841,14 @@ class DirectoryDialog(ttk.Toplevel):
     def cancel(self):
         self.destroy()
 
-    def toggle_password_visibility(self, entry):
-        """在遮蔽(*)和明文之间切换指定密码输入框"""
-        entry.configure(show="" if entry.cget("show") == "*" else "*")
+    def toggle_password_visibility(self, entry, btn):
+        """在遮蔽(*)和明文之间切换指定密码输入框，并更新按钮图标"""
+        if entry.cget("show") == "*":
+            entry.configure(show="")
+            btn.configure(text="🚫")
+        else:
+            entry.configure(show="*")
+            btn.configure(text="👁")
 
     def toggle_totp(self):
         """启用/禁用目录管理员TOTP两步验证"""
@@ -1771,8 +1780,10 @@ class FileShareApp:
         self.admin_pwd_entry.pack(side=LEFT, fill=X, expand=YES)
         ToolTip(self.admin_pwd_entry, "管理密码，一码通用，WEB页提示输入密码的地方用它都行")
         if show_password_toggle_enabled():
-            ttk.Button(admin_pwd_frame, text="显示", width=6,
-                       command=lambda: self.toggle_password_visibility(self.admin_pwd_entry)).pack(side=LEFT, padx=2)
+            self.admin_pwd_btn = ttk.Button(admin_pwd_entry_container, text="👁", width=3,
+                                            command=lambda: self.toggle_password_visibility(self.admin_pwd_entry, self.admin_pwd_btn))
+            self.admin_pwd_btn.pack(side=LEFT, padx=2)
+            ToolTip(self.admin_pwd_btn, "显示/隐藏密码")
 
         # 全局密码设置
         pwd_frame = ttk.Frame(settings_container)
@@ -1790,8 +1801,10 @@ class FileShareApp:
         self.pwd_entry.pack(side=LEFT, fill=X, expand=YES)
         ToolTip(self.pwd_entry, "全局密码也就是进入WEB页面首页用的密码")
         if show_password_toggle_enabled():
-            ttk.Button(pwd_entry_container, text="显示", width=6,
-                       command=lambda: self.toggle_password_visibility(self.pwd_entry)).pack(side=LEFT, padx=2)
+            self.pwd_btn = ttk.Button(pwd_entry_container, text="👁", width=3,
+                                      command=lambda: self.toggle_password_visibility(self.pwd_entry, self.pwd_btn))
+            self.pwd_btn.pack(side=LEFT, padx=2)
+            ToolTip(self.pwd_btn, "显示/隐藏密码")
 
         # 超级管理员 TOTP 两步验证设置
         admin_totp_frame = ttk.Frame(settings_container)
@@ -2241,9 +2254,14 @@ class FileShareApp:
             menu.add_command(label="删除", command=self.remove_directory)
             menu.post(event.x_root, event.y_root)
 
-    def toggle_password_visibility(self, entry):
-        """在遮蔽(*)和明文之间切换指定密码输入框"""
-        entry.configure(show="" if entry.cget("show") == "*" else "*")
+    def toggle_password_visibility(self, entry, btn):
+        """在遮蔽(*)和明文之间切换指定密码输入框，并更新按钮图标"""
+        if entry.cget("show") == "*":
+            entry.configure(show="")
+            btn.configure(text="🚫")
+        else:
+            entry.configure(show="*")
+            btn.configure(text="👁")
 
     def toggle_admin_totp(self):
         """启用/禁用超级管理员TOTP两步验证"""
