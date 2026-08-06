@@ -169,6 +169,28 @@ def check_auth_timestamp(f):
     return decorated_function
 
 
+def require_dir_access(dir_obj, base_dir=None, alias=None, is_api=False):
+    """统一校验对某目录的访问权限，防止直连完整路径绕过认证。
+
+    规则：
+    - 目录设置了独立访问密码 → 只校验该目录会话，缺省返回目录密码页/403
+    - 目录未设独立密码 → 若配置了全局密码，则校验全局会话，缺省返回全局密码页/403
+    返回响应对象表示需跳转/拒绝；返回 None 表示放行。
+    """
+    key_alias = alias or base_dir or dir_obj.alias
+    if getattr(dir_obj, 'password', None):
+        if not session.get(f'auth_{key_alias}'):
+            if is_api:
+                return jsonify({'error': 'Authentication required'}), 403
+            return render_template('directory_password.html', alias=key_alias, pageMark=f'{key_alias}访问密码')
+    else:
+        if config.global_password and config.global_password.strip() and not session.get('auth'):
+            if is_api:
+                return jsonify({'error': 'Global password required'}), 403
+            return render_template('global_password.html', alias='global', pageMark=f'全局密码')
+    return None
+
+
 # 清理函数 用于清理打包下载类路由函数生成的系统临时文件及过期分享链接
 def cleanup_temp_files_and_expired_links():
     global cleanup_thread_running
@@ -442,8 +464,10 @@ def list_dir(dirname):
                                error_code=404,
                                message="找不到相关目录或文件", pageMark=f'找不到相关目录或文件'), 404
 
-    if dir_obj.password and not session.get(f'auth_{base_dir}'):
-        return render_template('directory_password.html', alias=base_dir, pageMark=f'{base_dir}访问密码')
+    # 校验访问权限（目录独立密码或全局密码兜底）
+    access_resp = require_dir_access(dir_obj, base_dir=base_dir)
+    if access_resp:
+        return access_resp
 
     # 安全路径拼接，防止路径遍历
     sub_path = dirname.split('/')[1:]
@@ -515,9 +539,10 @@ def search_files(alias):
     if not dir_obj:
         return jsonify({'error': 'Directory not found'}), 404
 
-    # 检查目录访问权限
-    if dir_obj.password and not session.get(f'auth_{alias}'):
-        return jsonify({'error': 'Authentication required'}), 403
+    # 校验访问权限（目录独立密码或全局密码兜底）
+    access_resp = require_dir_access(dir_obj, base_dir=alias, is_api=True)
+    if access_resp:
+        return access_resp
 
     if not search_term:
         return jsonify({'results': [], 'total': 0, 'limited': False, 'timeout': False})
@@ -593,6 +618,14 @@ def search_files(alias):
 @flask_app.route('/preview/<path:filepath>')
 @check_auth_timestamp
 def preview_file(filepath):
+    base_dir = filepath.split('/')[0]
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+    if not dir_obj:
+        return '目录不存在', 404
+    access_resp = require_dir_access(dir_obj, base_dir=base_dir, is_api=request.headers.get('X-Requested-With') == 'XMLHttpRequest')
+    if access_resp:
+        return access_resp
+
     # 验证和获取文件路径
     result = validate_file_path(filepath)
     if isinstance(result, tuple):
@@ -666,6 +699,19 @@ def calculate_batch_size(items):    # 计算批量文件总大小
 @check_auth_timestamp
 def batch_download():
     files = request.json.get('items', [])
+    # 校验每个文件所属目录的访问权限
+    checked_aliases = set()
+    for file in files:
+        base_dir = file['path'].split('/')[0]
+        if base_dir in checked_aliases:
+            continue
+        dir_obj = next((d for d in config.shared_dirs.values() if d.alias == base_dir), None)
+        if dir_obj:
+            access_resp = require_dir_access(dir_obj, base_dir=base_dir, is_api=True)
+            if access_resp:
+                return access_resp
+        checked_aliases.add(base_dir)
+
     temp_zip = tempfile.NamedTemporaryFile(prefix='file_share_', suffix='.zip', delete=False)
 
     with zipfile.ZipFile(temp_zip.name, 'w') as zf:
@@ -733,9 +779,10 @@ def download(filepath):
         flask_app.logger.error(f"Directory not found: {dirname}")
         return "Directory not found", 404
 
-    # 检查目录访问权限
-    if dir_obj.password and not session.get(f'auth_{dirname}'):
-        return render_template('directory_password.html', alias=dirname, pageMark=f'{dirname}访问密码')
+    # 检查目录访问权限（含全局密码兜底）
+    access_resp = require_dir_access(dir_obj, base_dir=dirname)
+    if access_resp:
+        return access_resp
 
     # 安全路径拼接，防止路径遍历
     try:
