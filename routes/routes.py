@@ -1718,9 +1718,9 @@ def update_settings():
     # 管理员 TOTP 免密：仅当 TOTP 启用时才接受该开关，否则复位
     config.admin_totp_only = bool(data.get('admin_totp_only') and totp_enabled)
 
-    # 会话空闲超时（秒），0=禁用；非法值回退默认600
+    # 会话空闲超时（分钟，前端以分钟为单位），0=禁用；非法值回退默认600秒
     try:
-        config.session_timeout = max(0, int(data.get('session_timeout', config.session_timeout)))
+        config.session_timeout = max(0, int(data.get('session_timeout', config.session_timeout // 60))) * 60
     except (TypeError, ValueError):
         config.session_timeout = getattr(config, 'session_timeout', 600)
 

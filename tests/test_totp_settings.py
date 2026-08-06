@@ -57,3 +57,15 @@ def test_totp_only_login_without_password(client):
     assert resp.status_code == 302
     with client.session_transaction() as s:
         assert s.get("admin") is True
+
+
+def test_update_settings_converts_minutes_to_seconds(client):
+    """前端以分钟提交会话超时，后端应转换为秒存储。"""
+    from main import config
+    _login_admin(client)
+    resp = client.post("/api/settings",
+                       data={"global_password": "",
+                             "admin_password": "",
+                             "session_timeout": "30"})
+    assert resp.status_code == 200
+    assert config.session_timeout == 30 * 60
