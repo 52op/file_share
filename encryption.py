@@ -66,7 +66,7 @@ def set_key_dir(directory):
 def get_crypto():
     global _crypto
     if _crypto is None:
-        _crypto = ConfigCrypto(key_dir=_KEY_dir)
+        _crypto = ConfigCrypto(key_dir=_KEY_DIR)
     return _crypto
 
 
