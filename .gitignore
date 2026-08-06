@@ -9,3 +9,4 @@ temp/
 *.json
 .codebuddy/
 venv_3.8/
+.playwright-mcp/

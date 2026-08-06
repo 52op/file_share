@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>两步验证 - {{ pageMark }}</title>
+    <link href="{{ url_for('static', filename='bootstrap/css/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='bootstrap-icons/bootstrap-icons.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row justify-content-center align-items-center min-vh-100">
+            <div class="col-md-4">
+                <div class="card shadow">
+                    <div class="card-header text-center bg-primary text-white">
+                        <h4><i class="bi bi-shield-lock"></i> 两步验证</h4>
+                        <p class="mb-0">请输入验证器应用中的6位动态验证码</p>
+                    </div>
+                    <div class="card-body">
+                        {% if error %}
+                        <div class="alert alert-danger" role="alert">
+                            <i class="bi bi-exclamation-triangle"></i> {{ error }}
+                        </div>
+                        {% endif %}
+
+                        <form method="post" action="{{ url_for('admin_2fa' if scope == 'admin' else 'dir_admin_2fa') }}">
+                            <div class="mb-3">
+                                <label for="code" class="form-label">
+                                    <i class="bi bi-key"></i> 动态验证码
+                                </label>
+                                <input type="text" class="form-control" id="code" name="code"
+                                       placeholder="请输入6位验证码" required autofocus
+                                       maxlength="6" pattern="[0-9]*" inputmode="numeric">
+                                <div class="form-text">
+                                    <i class="bi bi-info-circle"></i> 打开您的身份验证器应用，输入当前显示的6位验证码
+                                </div>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-box-arrow-in-right"></i> 验证
+                                </button>
+                                <a href="javascript:history.back()" class="btn btn-outline-secondary">
+                                    <i class="bi bi-arrow-left"></i> 返回
+                                </a>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='bootstrap/js/bootstrap.bundle.min.js') }}"></script>
+    <script>
+        // 自动聚焦到验证码输入框
+        document.getElementById('code').focus();
+        // 限制只能输入数字
+        document.getElementById('code').addEventListener('input', function() {
+            this.value = this.value.replace(/[^0-9]/g, '').slice(0, 6);
+        });
+    </script>
+</body>
+</html>

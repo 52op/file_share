@@ -27,6 +27,7 @@ from main import flask_app, config, format_file_size, partial_download, send_fil
     get_client_info, secure_filename_cn, safe_relative_path, ShareDirectory, password_change_timestamps, get_app_path
 from share_links import ShareManager   # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
 from firewall import IPLimiter
+import pyotp
 
 
 def safe_join_path(base_path, *paths):
@@ -1246,11 +1247,32 @@ def move_items(alias):
         return str(e), 500
 
 
+def _start_totp_flow(scope, dirname=None):
+    """记录待验证的TOTP会话，返回对应的验证页响应。scope: 'admin' 或 'dir_admin'"""
+    session['pending_2fa'] = {'scope': scope, 'dirname': dirname, 'time': time.time()}
+    return render_template('totp_verify.html',
+                           pageMark='两步验证', scope=scope, dirname=dirname)
+
+
+def _verify_totp(secret, code):
+    """校验TOTP验证码。secret为空时不校验。"""
+    if not secret:
+        return True
+    try:
+        totp = pyotp.TOTP(secret)
+        return bool(code) and totp.verify(code)
+    except Exception:
+        return False
+
+
 @flask_app.route('/admin/login', methods=['POST'])
 @check_ip_limit
 def admin_login():
     client_info = f"{request.remote_addr}"
     if request.form.get('password') == config.admin_password:
+        # 密码正确，先检查是否启用TOTP两步验证
+        if config.admin_totp_secret:
+            return _start_totp_flow('admin')
         session['admin'] = True
         session['admin_time'] = time.time()
         ip_limiter.reset(client_info)  # 登录成功后重置计数
@@ -1294,6 +1316,9 @@ def dir_admin_login():
 
     # 检查密码
     if dir_obj.admin_password and (password == dir_obj.admin_password or password == config.admin_password):
+        # 密码正确，先检查该目录管理员是否启用TOTP两步验证
+        if getattr(dir_obj, 'totp_secret', ''):
+            return _start_totp_flow('dir_admin', dirname)
         session[f'dir_admin_{dirname}'] = True
         session[f'dir_admin_time_{dirname}'] = time.time()
         ip_limiter.reset(client_info)  # 登录成功后重置计数
@@ -1313,6 +1338,54 @@ def dir_admin_logout(dirname):
     session.pop(f'dir_admin_{dirname}', None)
     flask_app.logger.info(f"{client_info} 目录管理员退出登录: {dirname}")
     return redirect(url_for('list_dir', dirname=dirname))
+
+
+@flask_app.route('/admin/2fa', methods=['POST'])
+@check_ip_limit
+def admin_2fa():
+    """超级管理员TOTP两步验证"""
+    client_info = f"{request.remote_addr}"
+    pending = session.get('pending_2fa')
+    if not pending or pending.get('scope') != 'admin':
+        return render_template('error.html', error_code=401, message="请先输入管理密码", pageMark='两步验证'), 401
+
+    code = request.form.get('code', '').strip()
+    if _verify_totp(config.admin_totp_secret, code):
+        session.pop('pending_2fa', None)
+        session['admin'] = True
+        session['admin_time'] = time.time()
+        ip_limiter.reset(client_info)
+        flask_app.logger.info(f"{client_info} 管理员TOTP验证成功")
+        return redirect(request.referrer or url_for('index'))
+    ip_limiter.add_failed_attempt(client_info)
+    flask_app.logger.warning(f"{client_info} 管理员TOTP验证失败")
+    return render_template('totp_verify.html', pageMark='两步验证',
+                           scope='admin', dirname=None, error='验证码错误或已过期'), 401
+
+
+@flask_app.route('/dir-admin/2fa', methods=['POST'])
+@check_ip_limit
+def dir_admin_2fa():
+    """目录管理员TOTP两步验证"""
+    client_info = f"{request.remote_addr}"
+    pending = session.get('pending_2fa')
+    if not pending or pending.get('scope') != 'dir_admin':
+        return render_template('error.html', error_code=401, message="请先输入目录管理密码", pageMark='两步验证'), 401
+
+    dirname = pending.get('dirname')
+    code = request.form.get('code', '').strip()
+    dir_obj = next((d for d in config.shared_dirs.values() if d.alias == dirname), None)
+    if dir_obj and _verify_totp(getattr(dir_obj, 'totp_secret', ''), code):
+        session.pop('pending_2fa', None)
+        session[f'dir_admin_{dirname}'] = True
+        session[f'dir_admin_time_{dirname}'] = time.time()
+        ip_limiter.reset(client_info)
+        flask_app.logger.info(f"{client_info} 目录管理员TOTP验证成功: {dirname}")
+        return redirect(request.referrer or url_for('list_dir', dirname=dirname))
+    ip_limiter.add_failed_attempt(client_info)
+    flask_app.logger.warning(f"{client_info} 目录管理员TOTP验证失败: {dirname}")
+    return render_template('totp_verify.html', pageMark='两步验证',
+                           scope='dir_admin', dirname=dirname, error='验证码错误或已过期'), 401
 
 
 @flask_app.route('/api/directory', methods=['POST'])

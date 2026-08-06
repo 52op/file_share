@@ -36,6 +36,7 @@ from tkinter import messagebox as tkmessagebox
 
 import netifaces
 import pystray
+import pyotp
 import ttkbootstrap as ttk
 from flask import Flask, render_template, request, session
 from PIL import Image, ImageTk
@@ -357,12 +358,13 @@ class ToolTip:
 
 
 class ShareDirectory:
-    def __init__(self, path, alias="", password="", desc="", admin_password=""):
+    def __init__(self, path, alias="", password="", desc="", admin_password="", totp_secret=""):
         self.path = path
         self.alias = alias
         self.password = password
         self.desc = desc
         self.admin_password = admin_password  # 新增：目录管理密码
+        self.totp_secret = totp_secret  # 目录管理员的 TOTP 双因素密钥（空=未启用）
         # 处理分区根目录
         if path.endswith(":\\"):
             self.name = f"drive_{path[0].lower()}"
@@ -377,6 +379,7 @@ class ShareDirectory:
             "name": self.name,  # 保存唯一标识名
             "desc": self.desc,
             "admin_password": self.admin_password,  # 新增：保存目录管理密码
+            "totp_secret": self.totp_secret,
         }
 
     @staticmethod
@@ -387,6 +390,7 @@ class ShareDirectory:
             data["password"],
             data.get("desc", ""),
             data.get("admin_password", ""),  # 新增：从配置文件恢复目录管理密码
+            data.get("totp_secret", ""),  # 从配置文件恢复目录管理员 TOTP 密钥
         )
         dir_obj.name = data.get("name", dir_obj.name)  # 恢复唯一标识名
         return dir_obj
@@ -417,6 +421,7 @@ class Config:
         self.shared_dirs = {}
         self.global_password = ""
         self.admin_password = "admin"  # 默认管理员密码
+        self.admin_totp_secret = ""  # 超级管理员的 TOTP 双因素密钥（空=未启用）
         self.port = 12345
         self.dark_theme = False  # Add theme setting
         self.log_to_file = False  # Add logging setting
@@ -461,6 +466,7 @@ class Config:
                     "admin_password": getattr(
                         dir_obj, "admin_password", ""
                     ),  # 新增：保存目录管理密码
+                    "totp_secret": getattr(dir_obj, "totp_secret", ""),
                 }
                 for name, dir_obj in self.shared_dirs.items()
             },
@@ -468,6 +474,7 @@ class Config:
             "admin_password": self.admin_password
             if self.admin_password
             else "admin",  # 修复：移除对全局config的引用
+            "admin_totp_secret": self.admin_totp_secret,
             "port": self.port,
             "dark_theme": self.dark_theme,
             "log_to_file": self.log_to_file,
@@ -503,9 +510,13 @@ class Config:
                     # 新增：确保admin_password字段存在
                     if "admin_password" not in dir_data:
                         dir_data["admin_password"] = ""
+                    # 确保totp_secret字段存在
+                    if "totp_secret" not in dir_data:
+                        dir_data["totp_secret"] = ""
                     self.shared_dirs[name] = ShareDirectory.from_dict(dir_data)
                 self.global_password = data.get("global_password", "")
                 self.admin_password = data.get("admin_password", "admin")
+                self.admin_totp_secret = data.get("admin_totp_secret", "")
                 self.port = data.get("port", 12345)
                 self.dark_theme = data.get("dark_theme", False)
                 self.log_to_file = data.get("log_to_file", False)
@@ -662,6 +673,25 @@ class DirectoryDialog(ttk.Toplevel):
             self.admin_pwd_entry,
             "设置此目录的管理密码，拥有此密码的用户可以管理此目录\n留空表示只有超级管理员可以管理",
         )
+
+        # 目录管理员 TOTP 两步验证设置
+        totp_frame = ttk.Frame(self)
+        totp_frame.pack(fill=X, padx=10, pady=5)
+        self.totp_enabled_var = tk.BooleanVar(
+            value=bool(dir_obj.totp_secret) if dir_obj else False)
+        ttk.Checkbutton(totp_frame, text="目录管理员两步验证(TOTP)",
+                        variable=self.totp_enabled_var,
+                        command=self.toggle_totp).pack(side=LEFT)
+        self.totp_secret_var = tk.StringVar(
+            value=dir_obj.totp_secret if dir_obj else "")
+        self.totp_entry = ttk.Entry(totp_frame, textvariable=self.totp_secret_var,
+                                    width=32, state="readonly")
+        self.totp_entry.pack(side=LEFT, padx=3)
+        ttk.Button(totp_frame, text="生成密钥", width=8,
+                   command=lambda: self.gen_totp_secret(self.totp_secret_var)).pack(side=LEFT)
+        ttk.Button(totp_frame, text="复制链接", width=8,
+                   command=lambda: DirectoryDialog.copy_totp_link(
+                       self.winfo_toplevel(), self.totp_secret_var.get())).pack(side=LEFT, padx=3)
 
         # 添加描述输入框
         desc_frame = ttk.Frame(self)
@@ -820,12 +850,40 @@ class DirectoryDialog(ttk.Toplevel):
             self.password_var.get(),
             self.desc_var.get(),
             self.admin_password_var.get(),  # 新增：包含目录管理密码
+            self.totp_secret_var.get().strip() if self.totp_enabled_var.get() else "",
         )
         self.result.name = dir_name  # 设置唯一标识名
         self.destroy()
 
     def cancel(self):
         self.destroy()
+
+    def toggle_totp(self):
+        """启用/禁用目录管理员TOTP两步验证"""
+        if self.totp_enabled_var.get() and not self.totp_secret_var.get().strip():
+            self.gen_totp_secret(self.totp_secret_var)
+        state = "readonly" if self.totp_enabled_var.get() else "normal"
+        self.totp_entry.configure(state=state)
+
+    def gen_totp_secret(self, var):
+        """生成新的TOTP密钥并填充到指定的StringVar"""
+        var.set(pyotp.random_base32())
+        tkmessagebox.showinfo(
+            "两步验证",
+            "已生成新密钥。请复制绑定链接，在身份验证器应用中添加账户。"
+            "启用保存后，登录该目录时需要输入动态验证码。")
+
+    @staticmethod
+    def copy_totp_link(parent, secret):
+        """复制TOTP绑定链接到剪贴板"""
+        secret = (secret or '').strip()
+        if not secret:
+            tkmessagebox.showwarning("提示", "请先生成TOTP密钥")
+            return
+        link = f"https://2fa.it0731.cn/tok/{secret}"
+        parent.clipboard_clear()
+        parent.clipboard_append(link)
+        tkmessagebox.showinfo("已复制", f"绑定链接已复制到剪贴板：\n{link}")
 
 
 class PageSettingsDialog(ttk.Toplevel):
@@ -1766,6 +1824,25 @@ class FileShareApp:
         pwd_btn.pack(side=LEFT)
         ToolTip(pwd_btn, "显隐密码")
 
+        # 超级管理员 TOTP 两步验证设置
+        admin_totp_frame = ttk.Frame(settings_container)
+        admin_totp_frame.pack(side=LEFT, padx=5, fill=X, expand=YES)
+        self.admin_totp_enabled_var = tk.BooleanVar(
+            value=bool(getattr(config, 'admin_totp_secret', '')))
+        ttk.Checkbutton(admin_totp_frame, text="管理员两步验证(TOTP)",
+                        variable=self.admin_totp_enabled_var,
+                        command=self.toggle_admin_totp).pack(side=LEFT)
+        self.admin_totp_secret_var = tk.StringVar(
+            value=getattr(config, 'admin_totp_secret', ''))
+        self.admin_totp_entry = ttk.Entry(admin_totp_frame,
+                                          textvariable=self.admin_totp_secret_var,
+                                          width=32, state="readonly")
+        self.admin_totp_entry.pack(side=LEFT, padx=3)
+        ttk.Button(admin_totp_frame, text="生成密钥", width=8,
+                   command=lambda: self.gen_totp_secret(self.admin_totp_secret_var)).pack(side=LEFT)
+        ttk.Button(admin_totp_frame, text="复制链接", width=8,
+                   command=lambda: self.copy_totp_link(self.admin_totp_secret_var.get())).pack(side=LEFT, padx=3)
+
         # 端口设置
         port_frame = ttk.Frame(settings_container)
         port_frame.pack(side=LEFT, padx=5, fill=X, expand=YES)
@@ -2204,11 +2281,44 @@ class FileShareApp:
             menu.add_command(label="删除", command=self.remove_directory)
             menu.post(event.x_root, event.y_root)
 
+    def toggle_admin_totp(self):
+        """启用/禁用超级管理员TOTP两步验证"""
+        if self.admin_totp_enabled_var.get() and not self.admin_totp_secret_var.get().strip():
+            # 启用时若尚无密钥，自动生成
+            self.gen_totp_secret(self.admin_totp_secret_var)
+        state = "readonly" if self.admin_totp_enabled_var.get() else "normal"
+        self.admin_totp_entry.configure(state=state)
+
+    def gen_totp_secret(self, var):
+        """生成新的TOTP密钥并填充到指定的StringVar"""
+        var.set(pyotp.random_base32())
+        tkmessagebox.showinfo(
+            "两步验证",
+            "已生成新密钥。请复制绑定链接，在身份验证器应用中添加账户。"
+            "启用保存后，登录时需要输入该应用的6位动态验证码。")
+
+    def copy_totp_link(self, secret):
+        """复制TOTP绑定链接到剪贴板"""
+        secret = (secret or '').strip()
+        if not secret:
+            tkmessagebox.showwarning("提示", "请先生成TOTP密钥")
+            return
+        link = f"https://2fa.it0731.cn/tok/{secret}"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(link)
+        tkmessagebox.showinfo("已复制", f"绑定链接已复制到剪贴板：\n{link}")
+
+
     def load_config(self):
         config.load()
         self.refresh_dir_list()
         self.password_var.set(config.global_password)
         self.admin_password_var.set(config.admin_password)
+        # 恢复超级管理员 TOTP 两步验证显示状态
+        if hasattr(self, 'admin_totp_enabled_var'):
+            self.admin_totp_secret_var.set(getattr(config, 'admin_totp_secret', ''))
+            self.admin_totp_enabled_var.set(bool(getattr(config, 'admin_totp_secret', '')))
+            self.admin_totp_entry.configure(state="readonly" if self.admin_totp_enabled_var.get() else "normal")
         self.port_var.set(str(config.port))
         self.cleanup_time_var.set(config.cleanup_time)
         self.auto_cleanup_var.set(config.auto_cleanup)
@@ -2225,6 +2335,13 @@ class FileShareApp:
             config.admin_password = new_admin_password
 
         config.global_password = self.password_var.get()
+
+        # 保存超级管理员 TOTP 两步验证密钥
+        if hasattr(self, 'admin_totp_enabled_var'):
+            if self.admin_totp_enabled_var.get():
+                config.admin_totp_secret = self.admin_totp_secret_var.get().strip()
+            else:
+                config.admin_totp_secret = ""
 
         config.port = int(self.port_var.get() or 12345)
         config.cleanup_time = self.cleanup_time_var.get()
