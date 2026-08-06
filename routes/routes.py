@@ -1715,6 +1715,8 @@ def update_settings():
         config.admin_totp_secret = totp_secret
     else:
         config.admin_totp_secret = ''
+    # 管理员 TOTP 免密：仅当 TOTP 启用时才接受该开关，否则复位
+    config.admin_totp_only = bool(data.get('admin_totp_only') and totp_enabled)
 
     # 会话空闲超时（秒），0=禁用；非法值回退默认600
     try:
@@ -1737,6 +1739,7 @@ def get_admin_totp():
     return jsonify({
         'enabled': bool(secret),
         'secret': secret,
+        'totp_only': bool(getattr(config, 'admin_totp_only', False)),
         'link': f"https://2fa.it0731.cn/tok/{secret}" if secret else ''
     })
 
