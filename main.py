@@ -45,6 +45,8 @@ from ttkbootstrap.constants import *
 from ttkbootstrap.scrolled import ScrolledText
 from user_agents import parse
 
+from encryption import get_crypto, set_key_dir
+
 # Cheroot服务器（替换Waitress）
 from werkzeug.serving import make_server  # 开发环境使用
 
@@ -159,6 +161,9 @@ flask_app = Flask(__name__)
 
 # 在 Flask 应用初始化时添加 secret_key
 flask_app.secret_key = os.urandom(24)
+
+# 设置加密密钥文件所在目录（程序运行目录）
+set_key_dir(get_app_path())
 
 serverUrl = ""
 runningPort = 12345
@@ -372,25 +377,27 @@ class ShareDirectory:
             self.name = os.path.basename(path)
 
     def to_dict(self):
+        _c = get_crypto()
         return {
             "path": self.path,
             "alias": self.alias,
-            "password": self.password,
+            "password": _c.encrypt(self.password),
             "name": self.name,  # 保存唯一标识名
             "desc": self.desc,
-            "admin_password": self.admin_password,  # 新增：保存目录管理密码
-            "totp_secret": self.totp_secret,
+            "admin_password": _c.encrypt(self.admin_password),  # 新增：保存目录管理密码
+            "totp_secret": _c.encrypt(self.totp_secret),
         }
 
     @staticmethod
     def from_dict(data):
+        _c = get_crypto()
         dir_obj = ShareDirectory(
             data["path"],
             data.get("alias", ""),
-            data["password"],
+            _c.decrypt(data["password"]),
             data.get("desc", ""),
-            data.get("admin_password", ""),  # 新增：从配置文件恢复目录管理密码
-            data.get("totp_secret", ""),  # 从配置文件恢复目录管理员 TOTP 密钥
+            _c.decrypt(data.get("admin_password", "")),  # 新增：从配置文件恢复目录管理密码
+            _c.decrypt(data.get("totp_secret", "")),  # 从配置文件恢复目录管理员 TOTP 密钥
         )
         dir_obj.name = data.get("name", dir_obj.name)  # 恢复唯一标识名
         return dir_obj
@@ -455,26 +462,14 @@ class Config:
     def save(self):
         config_data = {
             "shared_dirs": {
-                name: {
-                    "path": dir_obj.path,
-                    "alias": dir_obj.alias,
-                    "password": dir_obj.password,
-                    "name": dir_obj.name,
-                    "desc": getattr(
-                        dir_obj, "desc", ""
-                    ),  # 使用 getattr 安全获取 desc 属性
-                    "admin_password": getattr(
-                        dir_obj, "admin_password", ""
-                    ),  # 新增：保存目录管理密码
-                    "totp_secret": getattr(dir_obj, "totp_secret", ""),
-                }
+                name: dir_obj.to_dict()
                 for name, dir_obj in self.shared_dirs.items()
             },
-            "global_password": self.global_password,
-            "admin_password": self.admin_password
+            "global_password": get_crypto().encrypt(self.global_password),
+            "admin_password": get_crypto().encrypt(self.admin_password)
             if self.admin_password
             else "admin",  # 修复：移除对全局config的引用
-            "admin_totp_secret": self.admin_totp_secret,
+            "admin_totp_secret": get_crypto().encrypt(self.admin_totp_secret),
             "port": self.port,
             "dark_theme": self.dark_theme,
             "log_to_file": self.log_to_file,
@@ -514,9 +509,9 @@ class Config:
                     if "totp_secret" not in dir_data:
                         dir_data["totp_secret"] = ""
                     self.shared_dirs[name] = ShareDirectory.from_dict(dir_data)
-                self.global_password = data.get("global_password", "")
-                self.admin_password = data.get("admin_password", "admin")
-                self.admin_totp_secret = data.get("admin_totp_secret", "")
+                self.global_password = get_crypto().decrypt(data.get("global_password", ""))
+                self.admin_password = get_crypto().decrypt(data.get("admin_password", "admin"))
+                self.admin_totp_secret = get_crypto().decrypt(data.get("admin_totp_secret", ""))
                 self.port = data.get("port", 12345)
                 self.dark_theme = data.get("dark_theme", False)
                 self.log_to_file = data.get("log_to_file", False)
