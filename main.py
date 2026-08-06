@@ -475,9 +475,7 @@ class Config:
                 for name, dir_obj in self.shared_dirs.items()
             },
             "global_password": get_crypto().encrypt(self.global_password),
-            "admin_password": get_crypto().encrypt(self.admin_password)
-            if self.admin_password
-            else "admin",  # 修复：移除对全局config的引用
+            "admin_password": get_crypto().encrypt(self.admin_password),
             "admin_totp_secret": get_crypto().encrypt(self.admin_totp_secret),
             "admin_totp_only": self.admin_totp_only,
             "port": self.port,
