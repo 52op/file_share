@@ -47,3 +47,17 @@ def test_api_settings_triggers_gui_sync(app):
         assert triggered == ["synced"], "网页保存后应触发GUI同步回调"
     finally:
         main.set_gui_config_sync_cb(None)
+
+
+def test_any_config_save_triggers_gui_sync(tmp_path):
+    """Config.save()统一通知：目录操作等任何写盘都会触发GUI同步，不再漏路径"""
+    from main import config
+    main.config.config_file = str(tmp_path / "share_config.json")
+    triggered = []
+    main.set_gui_config_sync_cb(lambda: triggered.append('synced'))
+    try:
+        config.port = 6666
+        config.save()
+        assert triggered == ["synced"], "任何config.save()都应触发GUI同步"
+    finally:
+        main.set_gui_config_sync_cb(None)

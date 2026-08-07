@@ -519,6 +519,8 @@ class Config:
         }
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(config_data, f, ensure_ascii=False, indent=2)
+        # 统一通知GUI：任何来源（网页/GUI/目录操作）保存配置后刷新窗体
+        notify_gui_config_saved()
 
     def load(self):
         if os.path.exists(self.config_file):
@@ -1565,6 +1567,9 @@ class FileShareApp:
 
         # 网页保存配置时同步窗体（root.after 保证在主线程执行）
         set_gui_config_sync_cb(lambda: self.root.after(0, self.refresh_vars_from_config))
+        # 跨进程兜底：低频监听配置文件变化（后台服务等独立进程写盘时刷新窗体）
+        self._last_config_mtime = 0.0
+        self._poll_config_mtime()
 
         # 初始化日志
         self.logger = setup_service_logger(flask_app)
@@ -2339,6 +2344,7 @@ class FileShareApp:
     def load_config(self):
         config.load()
         self.refresh_dir_list()
+        self._update_config_mtime()
         self._set_gui_var('password_var', config.global_password)
         self._set_gui_var('admin_password_var', config.admin_password)
         # 恢复超级管理员 TOTP 两步验证显示状态
@@ -2384,6 +2390,35 @@ class FileShareApp:
             self._set_gui_var('cleanup_time_var', config.cleanup_time)
         if hasattr(self, 'auto_cleanup_var'):
             self._set_gui_var('auto_cleanup_var', config.auto_cleanup)
+        if hasattr(self, 'refresh_dir_list'):
+            self.refresh_dir_list()
+
+    def _update_config_mtime(self):
+        """记录当前配置文件修改时间，供跨进程兜底判断外部改动使用"""
+        try:
+            if not hasattr(self, '_last_config_mtime'):
+                self._last_config_mtime = 0.0
+            if os.path.exists(config.config_file):
+                self._last_config_mtime = os.path.getmtime(config.config_file)
+        except Exception:
+            pass
+
+    def _poll_config_mtime(self):
+        """低频跨进程兜底：当配置文件被其他进程（如后台服务）改写时刷新窗体。
+        仅当文件修改时间变化才真正读盘，避免高频刷盘开销。"""
+        try:
+            if os.path.exists(config.config_file):
+                mtime = os.path.getmtime(config.config_file)
+                if mtime > self._last_config_mtime:
+                    self._update_config_mtime()
+                    self.load_config()
+        except Exception:
+            pass
+        try:
+            # 每 3 秒检查一次，开销极低
+            self.root.after(3000, self._poll_config_mtime)
+        except Exception:
+            pass
 
     def save_config(self):
         # 全局密码：仅当用户在GUI改动过时才回写，保留网页端最新值

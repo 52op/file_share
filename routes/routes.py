@@ -1725,10 +1725,7 @@ def update_settings():
         config.session_timeout = getattr(config, 'session_timeout', 600)
 
     config.save()
-
-    # 同步GUI窗体变量（网页保存后，GUI窗口需反映最新设置）
-    from main import notify_gui_config_saved
-    notify_gui_config_saved()
+    # Config.save 内部会在保存后统一通知GUI同步窗体，无需再显式调用
 
     flask_app.logger.info(f"{client_info} 更新了系统设置")
     return 'Success', 200
