@@ -1726,6 +1726,10 @@ def update_settings():
 
     config.save()
 
+    # 同步GUI窗体变量（网页保存后，GUI窗口需反映最新设置）
+    from main import notify_gui_config_saved
+    notify_gui_config_saved()
+
     flask_app.logger.info(f"{client_info} 更新了系统设置")
     return 'Success', 200
 

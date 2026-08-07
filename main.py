@@ -173,6 +173,9 @@ set_key_dir(get_app_path())
 serverUrl = ""
 runningPort = 12345
 
+# 网页保存配置后同步GUI窗体的回调（由FileShareApp注册，无GUI时为空）
+_gui_config_sync_cb = None
+
 # 添加一个全局字典来存储密码修改时间戳
 password_change_timestamps = {
     "global": 0,  # 全局密码最后修改时间
@@ -180,6 +183,22 @@ password_change_timestamps = {
     "directories": {},  # 各目录密码最后修改时间
     "shares": {},  # 分享链接密码最后修改时间
 }
+
+
+def set_gui_config_sync_cb(cb):
+    """注册GUI配置同步回调（由FileShareApp调用）"""
+    global _gui_config_sync_cb
+    _gui_config_sync_cb = cb
+
+
+def notify_gui_config_saved():
+    """网页保存配置后通知GUI刷新窗体var（线程安全，主线程执行）"""
+    cb = _gui_config_sync_cb
+    if cb:
+        try:
+            cb()
+        except Exception:
+            pass
 
 
 def get_path(relative_path):
@@ -1544,6 +1563,9 @@ class FileShareApp:
         self.root = root
         self.style = style
 
+        # 网页保存配置时同步窗体（root.after 保证在主线程执行）
+        set_gui_config_sync_cb(lambda: self.root.after(0, self.refresh_vars_from_config))
+
         # 初始化日志
         self.logger = setup_service_logger(flask_app)
 
@@ -2330,6 +2352,25 @@ class FileShareApp:
         self.port_var.set(str(config.port))
         self.cleanup_time_var.set(config.cleanup_time)
         self.auto_cleanup_var.set(config.auto_cleanup)
+
+    def refresh_vars_from_config(self):
+        """网页保存配置后刷新窗体var（不重新加载磁盘，不重建目录，避免覆盖GUI编辑）"""
+        if hasattr(self, 'password_var'):
+            self.password_var.set(config.global_password)
+        if hasattr(self, 'admin_password_var'):
+            self.admin_password_var.set(config.admin_password)
+        if hasattr(self, 'admin_totp_enabled_var'):
+            self.admin_totp_secret_var.set(getattr(config, 'admin_totp_secret', ''))
+            self.admin_totp_enabled_var.set(bool(getattr(config, 'admin_totp_secret', '')))
+            self.admin_totp_entry.configure(state="readonly" if self.admin_totp_enabled_var.get() else "normal")
+            if hasattr(self, 'admin_totp_only_var'):
+                self.admin_totp_only_var.set(bool(getattr(config, 'admin_totp_only', False)))
+        if hasattr(self, 'port_var'):
+            self.port_var.set(str(config.port))
+        if hasattr(self, 'cleanup_time_var'):
+            self.cleanup_time_var.set(config.cleanup_time)
+        if hasattr(self, 'auto_cleanup_var'):
+            self.auto_cleanup_var.set(config.auto_cleanup)
 
     def save_config(self):
         # 检查全局密码是否变化
