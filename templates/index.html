@@ -328,16 +328,13 @@
                                         <button class="btn btn-outline-secondary" type="button" id="genTotpBtn" onclick="generateTotp()">
                                             <i class="bi bi-arrow-clockwise"></i> 生成密钥
                                         </button>
-                                        <button class="btn btn-outline-primary" type="button" id="copyTotpBtn" onclick="copyTotpLink()">
-                                            <i class="bi bi-clipboard-plus"></i> 复制绑定链接
-                                        </button>
                                     </div>
                                     <div class="input-group mt-2" id="totpLinkGroup" style="display:none;">
                                         <span class="input-group-text">绑定链接</span>
                                         <input type="text" class="form-control" id="totpLinkInput" readonly
                                                placeholder="生成密钥后此处显示绑定链接" onclick="this.focus();this.select();">
                                     </div>
-                                    <small class="text-muted" id="totpLinkText">未启用。生成密钥后，复制绑定链接在身份验证器App中添加。</small>
+                                    <small class="text-muted" id="totpLinkText">未启用。生成密钥后，在上方链接框中全选复制绑定链接，添加到身份验证器App。</small>
                                 </div>
                             </div>
                         </div>
@@ -719,71 +716,18 @@
             updateTotpUi();
         }
 
-        // 切换复制按钮/绑定链接输入框：非HTTPS安全上下文无法可靠复制，改用可全选的输入框
+        // 更新绑定链接输入框：有密钥时显示链接并展开输入行，无密钥时隐藏
         function updateTotpUi() {
             const secret = document.getElementById('adminTotpSecret').value.trim();
-            const copyBtn = document.getElementById('copyTotpBtn');
             const linkGroup = document.getElementById('totpLinkGroup');
             const linkInput = document.getElementById('totpLinkInput');
-            if (!copyBtn || !linkGroup || !linkInput) return;
-            // isSecureContext: HTTPS 或 localhost/127.0.0.1 下为 true，可安全用剪贴板
+            if (!linkGroup || !linkInput) return;
             if (secret) {
-                const link = 'https://2fa.it0731.cn/tok/' + secret;
-                linkInput.value = link;
-                if (window.isSecureContext) {
-                    // HTTPS/localhost：可复制
-                    copyBtn.style.display = '';
-                    linkGroup.style.display = 'none';
-                } else {
-                    // 非HTTPS：隐藏复制按钮，显示可全选的输入框
-                    copyBtn.style.display = 'none';
-                    linkGroup.style.display = '';
-                }
+                linkInput.value = 'https://2fa.it0731.cn/tok/' + secret;
+                linkGroup.style.display = '';
             } else {
                 linkInput.value = '';
-                copyBtn.style.display = '';
                 linkGroup.style.display = 'none';
-            }
-        }
-
-        // 复制绑定链接
-        async function copyTotpLink() {
-            const secret = document.getElementById('adminTotpSecret').value.trim();
-            if (!secret) {
-                alert('请先生成TOTP密钥');
-                return;
-            }
-            const link = 'https://2fa.it0731.cn/tok/' + secret;
-            let copied = false;
-            // 方案一：Clipboard API（仅 HTTPS/localhost 可用）
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    await navigator.clipboard.writeText(link);
-                    copied = true;
-                }
-            } catch (e) { /* 降级到方案二 */ }
-
-            // 方案二：隐藏textarea + execCommand 兼容模式
-            if (!copied) {
-                const ta = document.createElement('textarea');
-                ta.value = link;
-                ta.style.position = 'fixed';
-                ta.style.opacity = '0';
-                document.body.appendChild(ta);
-                ta.focus();
-                ta.select();
-                try {
-                    copied = document.execCommand('copy');
-                } catch (e) {
-                    copied = false;
-                }
-                document.body.removeChild(ta);
-            }
-
-            if (copied) {
-                alert('绑定链接已复制：\n' + link);
-            } else {
-                alert('复制失败，请手动复制绑定链接：\n' + link);
             }
         }
 
