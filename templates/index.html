@@ -226,6 +226,30 @@
                             <label class="form-label">描述（可选）</label>
                             <textarea class="form-control" name="desc" id="editDesc" rows="3"></textarea>
                         </div>
+                        <div class="mb-3">
+                            <label class="form-label">
+                                <i class="bi bi-shield-check"></i> 目录管理员两步验证(TOTP)
+                            </label>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="dirTotpEnabled" name="dir_totp_enabled">
+                                <label class="form-check-label" for="dirTotpEnabled">启用后目录管理员登录需输入6位动态验证码</label>
+                            </div>
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="dirTotpOnly" name="dir_totp_only">
+                                <label class="form-check-label" for="dirTotpOnly">启用后登录只需输入6位动态验证码（免密码）</label>
+                            </div>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="dirTotpSecret" name="dir_totp_secret"
+                                       placeholder="TOTP密钥" readonly>
+                                <button class="btn btn-outline-secondary" type="button" onclick="genDirTotp()">
+                                    <i class="bi bi-arrow-clockwise"></i> 生成密钥
+                                </button>
+                                <button class="btn btn-outline-primary" type="button" onclick="copyDirTotpLink()">
+                                    <i class="bi bi-clipboard-plus"></i> 复制绑定链接
+                                </button>
+                            </div>
+                            <small class="text-muted" id="dirTotpLinkText">未启用。生成密钥后用身份验证器App扫码/输入添加。</small>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -502,6 +526,17 @@
                     document.getElementById('editAdminPassword').value = dirInfo.admin_password || '';
                     // 访问密码字段需要通过name属性获取
                     document.querySelector('input[name="password"]').value = dirInfo.password || '';
+                    // 回填目录管理员TOTP状态，避免"只改名称"保存时误关TOTP
+                    const dirEn = document.getElementById('dirTotpEnabled');
+                    const dirOnly = document.getElementById('dirTotpOnly');
+                    const dirSec = document.getElementById('dirTotpSecret');
+                    if (dirEn && dirOnly && dirSec) {
+                        dirEn.checked = !!dirInfo.totp_enabled;
+                        dirSec.value = dirInfo.totp_secret || '';
+                        dirOnly.checked = !!(dirInfo.totp_only && dirInfo.totp_enabled);
+                        dirOnly.disabled = !dirInfo.totp_enabled;
+                        updateDirTotpUi();
+                    }
                 } else {
                     // 如果获取失败，使用传入的参数
                     document.getElementById('editAlias').value = alias;
@@ -513,6 +548,7 @@
                 document.getElementById('editDesc').value = desc;
             }
 
+            bindDirTotpToggle();
             modal.show();
 
             document.getElementById('editDirForm').onsubmit = async (e) => {
@@ -792,6 +828,72 @@
                 result += chars[values[i] % 32];
             }
             return result;
+        }
+
+        // ===== 目录管理员 TOTP 设置 =====
+        function updateDirTotpUi() {
+            const secret = document.getElementById('dirTotpSecret').value.trim();
+            const text = document.getElementById('dirTotpLinkText');
+            if (text) {
+                text.textContent = secret
+                    ? 'TOTP已启用，绑定链接：https://2fa.it0731.cn/tok/' + secret
+                    : '未启用。生成密钥后，请复制绑定链接添加到身份验证器App。';
+            }
+        }
+
+        // 启用开关联动免密开关
+        function bindDirTotpToggle() {
+            const enEl = document.getElementById('dirTotpEnabled');
+            const onlyEl = document.getElementById('dirTotpOnly');
+            if (!enEl || !onlyEl) return;
+            enEl.removeEventListener('change', handleDirTotpChange);
+            enEl.addEventListener('change', handleDirTotpChange);
+        }
+        function handleDirTotpChange() {
+            const enEl = document.getElementById('dirTotpEnabled');
+            const onlyEl = document.getElementById('dirTotpOnly');
+            onlyEl.disabled = !enEl.checked;
+            if (!enEl.checked) onlyEl.checked = false;
+            updateDirTotpUi();
+        }
+
+        function genDirTotp() {
+            const secret = randomBase32();
+            const enEl = document.getElementById('dirTotpEnabled');
+            const onlyEl = document.getElementById('dirTotpOnly');
+            document.getElementById('dirTotpSecret').value = secret;
+            enEl.checked = true;
+            onlyEl.disabled = false;
+            onlyEl.checked = false;
+            updateDirTotpUi();
+        }
+
+        async function copyDirTotpLink() {
+            const secret = document.getElementById('dirTotpSecret').value.trim();
+            if (!secret) {
+                alert('请先生成TOTP密钥。');
+                return;
+            }
+            const link = 'https://2fa.it0731.cn/tok/' + secret;
+            let copied = false;
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(link);
+                    copied = true;
+                }
+            } catch (e) { /* 降级 */ }
+            if (!copied) {
+                const ta = document.createElement('textarea');
+                ta.value = link;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+                document.body.removeChild(ta);
+            }
+            alert(copied ? '绑定链接已复制。' : '自动复制失败，请全选上方密钥框并复制绑定链接。');
         }
 
         // Add Directory Form Handler

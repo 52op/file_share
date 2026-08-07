@@ -1617,7 +1617,10 @@ def manage_directory(alias):
                     'password': dir_obj.password,
                     'admin_password': dir_obj.admin_password,
                     'desc': dir_obj.desc,
-                    'path': dir_obj.path
+                    'path': dir_obj.path,
+                    'totp_enabled': bool(getattr(dir_obj, 'totp_secret', '')),
+                    'totp_secret': getattr(dir_obj, 'totp_secret', '') or '',
+                    'totp_only': bool(getattr(dir_obj, 'totp_only', False)),
                 })
         return 'Directory not found', 404
 
@@ -1665,6 +1668,18 @@ def manage_directory(alias):
                 dir_obj.desc = data.get('desc', dir_obj.desc)
                 dir_obj.password = data.get('password', '')
                 dir_obj.admin_password = data.get('admin_password', '')  # 新增：处理目录管理密码
+
+                # 目录管理员 TOTP 两步验证（与超管 update_settings 逻辑对齐）
+                totp_enabled = bool(data.get('dir_totp_enabled'))
+                if totp_enabled:
+                    dir_secret = (data.get('dir_totp_secret', '') or '').strip()
+                    dir_obj.totp_secret = dir_secret or pyotp.random_base32()
+                else:
+                    dir_obj.totp_secret = ''
+                # 仅当启用 TOTP 且已有密钥时才接受"仅验证码登录(免密)"
+                dir_obj.totp_only = bool(
+                    data.get('dir_totp_only') and totp_enabled and dir_obj.totp_secret
+                )
                 new_password = "有密码" if dir_obj.password else "无密码"
 
                 config.save()
