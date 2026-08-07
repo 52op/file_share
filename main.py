@@ -631,7 +631,7 @@ class DirectoryDialog(ttk.Toplevel):
         super().__init__(parent)
         self.withdraw()  # 先隐藏窗口
         self.title("目录设置")
-        self.geometry("400x250")
+        self.geometry("490x330")
         icon_path = get_path("static/favicon.ico")
         self.iconbitmap(icon_path)
 
@@ -704,25 +704,34 @@ class DirectoryDialog(ttk.Toplevel):
         # 目录管理员 TOTP 两步验证设置
         totp_frame = ttk.Frame(self)
         totp_frame.pack(fill=X, padx=10, pady=5)
+        # 第一行：启用开关 + 密钥 + 生成/复制
+        totp_row = ttk.Frame(totp_frame)
+        totp_row.pack(fill=X)
         self.totp_enabled_var = tk.BooleanVar(
             value=bool(dir_obj.totp_secret) if dir_obj else False)
-        ttk.Checkbutton(totp_frame, text="目录管理员两步验证(TOTP)",
+        ttk.Checkbutton(totp_row, text="目录管理员两步验证(TOTP)",
                         variable=self.totp_enabled_var,
                         command=self.toggle_totp).pack(side=LEFT)
         self.totp_secret_var = tk.StringVar(
             value=dir_obj.totp_secret if dir_obj else "")
-        self.totp_entry = ttk.Entry(totp_frame, textvariable=self.totp_secret_var,
-                                    width=32, state="readonly")
+        self.totp_entry = ttk.Entry(totp_row, textvariable=self.totp_secret_var,
+                                    width=20, state="readonly")
         self.totp_entry.pack(side=LEFT, padx=3)
-        ttk.Button(totp_frame, text="生成密钥", width=8,
+        ttk.Button(totp_row, text="生成", width=8,
                    command=lambda: self.gen_totp_secret(self.totp_secret_var)).pack(side=LEFT)
-        ttk.Button(totp_frame, text="复制链接", width=8,
+        ttk.Button(totp_row, text="复制", width=8,
                    command=lambda: DirectoryDialog.copy_totp_link(
                        self.winfo_toplevel(), self.totp_secret_var.get())).pack(side=LEFT, padx=3)
+        # 第二行：仅验证码登录(免密)，独立一行保证可见
+        totp_row2 = ttk.Frame(totp_frame)
+        totp_row2.pack(fill=X, pady=(2, 0))
         self.totp_only_var = tk.BooleanVar(
             value=bool(dir_obj.totp_only) if dir_obj else False)
-        ttk.Checkbutton(totp_frame, text="仅验证码登录(免密)",
-                        variable=self.totp_only_var).pack(side=LEFT, padx=5)
+        self.totp_only_chk = ttk.Checkbutton(
+            totp_row2, text="仅验证码登录(免密)", variable=self.totp_only_var)
+        self.totp_only_chk.pack(side=LEFT)
+        ttk.Label(totp_row2, text="启用TOTP后可用：登录此目录只需6位验证码，免密码").pack(side=LEFT, padx=4)
+        self.toggle_totp()  # 同步初始状态：未启用TOTP时免密置灰
 
         # 添加描述输入框
         desc_frame = ttk.Frame(self)
@@ -739,7 +748,7 @@ class DirectoryDialog(ttk.Toplevel):
         ttk.Button(btn_frame, text="取消", command=self.cancel).pack(side=LEFT)
 
         # 设置窗口居中显示 - 增加高度以容纳新的管理密码字段
-        self.geometry("400x300")
+        self.geometry("490x330")
         self.update_idletasks()
 
         # 获取主窗口和对话框的尺寸
@@ -892,10 +901,17 @@ class DirectoryDialog(ttk.Toplevel):
 
     def toggle_totp(self):
         """启用/禁用目录管理员TOTP两步验证"""
-        if self.totp_enabled_var.get() and not self.totp_secret_var.get().strip():
+        enabled = self.totp_enabled_var.get()
+        if enabled and not self.totp_secret_var.get().strip():
             self.gen_totp_secret(self.totp_secret_var)
-        state = "readonly" if self.totp_enabled_var.get() else "normal"
+        state = "readonly" if enabled else "normal"
         self.totp_entry.configure(state=state)
+        # 仅在启用TOTP时"免密"开关可操作，否则复位（与网页端联动一致）
+        only_state = "normal" if enabled else "disabled"
+        if hasattr(self, 'totp_only_chk'):
+            self.totp_only_chk.configure(state=only_state)
+        if not enabled:
+            self.totp_only_var.set(False)
 
     def gen_totp_secret(self, var):
         """生成新的TOTP密钥并填充到指定的StringVar"""
@@ -1588,7 +1604,7 @@ class FileShareApp:
 
         # 1. 设置窗口基本属性
         self.root.title("文件分享服务器")
-        self.root.geometry("800x600")
+        self.root.geometry("860x620")
 
         # 2. 初始化变量
         self.init_variables()
@@ -1855,25 +1871,34 @@ class FileShareApp:
         # 超级管理员 TOTP 两步验证设置
         admin_totp_frame = ttk.Frame(settings_container)
         admin_totp_frame.pack(side=LEFT, padx=5, fill=X, expand=YES)
+        # 第一行：启用开关 + 密钥 + 生成/复制
+        admin_totp_row = ttk.Frame(admin_totp_frame)
+        admin_totp_row.pack(fill=X)
         self.admin_totp_enabled_var = tk.BooleanVar(
             value=bool(getattr(config, 'admin_totp_secret', '')))
-        ttk.Checkbutton(admin_totp_frame, text="管理员两步验证(TOTP)",
+        ttk.Checkbutton(admin_totp_row, text="管理员两步验证(TOTP)",
                         variable=self.admin_totp_enabled_var,
                         command=self.toggle_admin_totp).pack(side=LEFT)
         self.admin_totp_secret_var = tk.StringVar(
             value=getattr(config, 'admin_totp_secret', ''))
-        self.admin_totp_entry = ttk.Entry(admin_totp_frame,
+        self.admin_totp_entry = ttk.Entry(admin_totp_row,
                                           textvariable=self.admin_totp_secret_var,
-                                          width=32, state="readonly")
+                                          width=20, state="readonly")
         self.admin_totp_entry.pack(side=LEFT, padx=3)
-        ttk.Button(admin_totp_frame, text="生成密钥", width=8,
+        ttk.Button(admin_totp_row, text="生成", width=4,
                    command=lambda: self.gen_totp_secret(self.admin_totp_secret_var)).pack(side=LEFT)
-        ttk.Button(admin_totp_frame, text="复制链接", width=8,
-                   command=lambda: self.copy_totp_link(self.admin_totp_secret_var.get())).pack(side=LEFT, padx=3)
+        ttk.Button(admin_totp_row, text="复制", width=4,
+                   command=lambda: self.copy_totp_link(self.admin_totp_secret_var.get())).pack(side=LEFT, padx=1)
+        # 第二行：仅验证码登录(免密)，独立一行保证可见
+        admin_totp_row2 = ttk.Frame(admin_totp_frame)
+        admin_totp_row2.pack(fill=X, pady=(2, 0))
         self.admin_totp_only_var = tk.BooleanVar(
             value=bool(getattr(config, 'admin_totp_only', False)))
-        ttk.Checkbutton(admin_totp_frame, text="仅验证码登录(免密)",
-                        variable=self.admin_totp_only_var).pack(side=LEFT, padx=5)
+        self.admin_totp_only_chk = ttk.Checkbutton(
+            admin_totp_row2, text="仅验证码登录(免密)", variable=self.admin_totp_only_var)
+        self.admin_totp_only_chk.pack(side=LEFT)
+        ttk.Label(admin_totp_row2, text="启用TOTP后可用：登录时只需6位验证码，免密码").pack(side=LEFT, padx=4)
+        self.toggle_admin_totp()  # 同步初始状态：未启用TOTP时免密置灰
 
         # 端口设置
         port_frame = ttk.Frame(settings_container)
@@ -2315,11 +2340,18 @@ class FileShareApp:
 
     def toggle_admin_totp(self):
         """启用/禁用超级管理员TOTP两步验证"""
-        if self.admin_totp_enabled_var.get() and not self.admin_totp_secret_var.get().strip():
+        enabled = self.admin_totp_enabled_var.get()
+        if enabled and not self.admin_totp_secret_var.get().strip():
             # 启用时若尚无密钥，自动生成
             self.gen_totp_secret(self.admin_totp_secret_var)
-        state = "readonly" if self.admin_totp_enabled_var.get() else "normal"
+        state = "readonly" if enabled else "normal"
         self.admin_totp_entry.configure(state=state)
+        # 仅在启用TOTP时"免密"开关可操作，否则复位（与网页端联动一致）
+        only_state = "normal" if enabled else "disabled"
+        if hasattr(self, 'admin_totp_only_chk'):
+            self.admin_totp_only_chk.configure(state=only_state)
+        if not enabled:
+            self.admin_totp_only_var.set(False)
 
     def gen_totp_secret(self, var):
         """生成新的TOTP密钥并填充到指定的StringVar"""
