@@ -15,6 +15,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 获取完整历史+所有标签，供"生成changelog"步骤取得上一个tag与提交日志
+          # （默认浅克隆只拉当前tag一个提交，导致 git describe/log 拿不到数据）
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup Python 3.8 (strict)
         uses: actions/setup-python@v5
