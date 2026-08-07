@@ -328,7 +328,11 @@
                                         <button class="btn btn-outline-secondary" type="button" id="genTotpBtn" onclick="generateTotp()">
                                             <i class="bi bi-arrow-clockwise"></i> 生成密钥
                                         </button>
+                                        <button class="btn btn-outline-primary" type="button" id="copyTotpBtn" onclick="copyTotpLink()">
+                                            <i class="bi bi-clipboard-plus"></i> 复制绑定链接
+                                        </button>
                                     </div>
+                                    <div class="mt-2" id="totpCopyNotice"></div>
                                     <div class="input-group mt-2" id="totpLinkGroup" style="display:none;">
                                         <span class="input-group-text">绑定链接</span>
                                         <input type="text" class="form-control" id="totpLinkInput" readonly
@@ -713,6 +717,8 @@
             }
             document.getElementById('totpLinkText').textContent =
                 '已生成新密钥，请复制绑定链接在身份验证器App中添加。';
+            const notice = document.getElementById('totpCopyNotice');
+            if (notice) notice.innerHTML = '';
             updateTotpUi();
         }
 
@@ -728,6 +734,50 @@
             } else {
                 linkInput.value = '';
                 linkGroup.style.display = 'none';
+            }
+        }
+
+        // 复制绑定链接：成功提示，失败（多见于非HTTPS）提示手动复制
+        async function copyTotpLink() {
+            const secret = document.getElementById('adminTotpSecret').value.trim();
+            const notice = document.getElementById('totpCopyNotice');
+            if (!secret) {
+                if (notice) notice.innerHTML = '<span class="text-danger">请先生成TOTP密钥。</span>';
+                return;
+            }
+            const link = 'https://2fa.it0731.cn/tok/' + secret;
+            let copied = false;
+            // 方案一：Clipboard API（仅 HTTPS/localhost 可用）
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(link);
+                    copied = true;
+                }
+            } catch (e) { /* 降级到方案二 */ }
+
+            // 方案二：隐藏textarea + execCommand 兼容模式
+            if (!copied) {
+                const ta = document.createElement('textarea');
+                ta.value = link;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try {
+                    copied = document.execCommand('copy');
+                } catch (e) {
+                    copied = false;
+                }
+                document.body.removeChild(ta);
+            }
+
+            if (notice) {
+                if (copied) {
+                    notice.innerHTML = '<span class="text-success">绑定链接已复制。</span>';
+                } else {
+                    notice.innerHTML = '<span class="text-danger">自动复制失败，请点击上方"绑定链接"输入框全选后手动复制。</span>';
+                }
             }
         }
 
