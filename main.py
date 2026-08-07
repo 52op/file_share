@@ -2324,6 +2324,9 @@ class FileShareApp:
             self.admin_totp_secret_var.set(getattr(config, 'admin_totp_secret', ''))
             self.admin_totp_enabled_var.set(bool(getattr(config, 'admin_totp_secret', '')))
             self.admin_totp_entry.configure(state="readonly" if self.admin_totp_enabled_var.get() else "normal")
+            # 恢复"仅验证码登录(免密)"开关，避免GUI保存时用过期的False覆盖已开启的设置
+            if hasattr(self, 'admin_totp_only_var'):
+                self.admin_totp_only_var.set(bool(getattr(config, 'admin_totp_only', False)))
         self.port_var.set(str(config.port))
         self.cleanup_time_var.set(config.cleanup_time)
         self.auto_cleanup_var.set(config.auto_cleanup)
@@ -2347,9 +2350,13 @@ class FileShareApp:
                 config.admin_totp_secret = self.admin_totp_secret_var.get().strip()
             else:
                 config.admin_totp_secret = ""
-        # 保存超级管理员 TOTP 仅验证码登录(免密) 开关
-        if hasattr(self, 'admin_totp_only_var'):
-            config.admin_totp_only = self.admin_totp_only_var.get()
+        # 保存超级管理员 TOTP 仅验证码登录(免密) 开关（仅当TOTP启用时有效）
+        if hasattr(self, 'admin_totp_enabled_var'):
+            config.admin_totp_only = bool(
+                getattr(config, 'admin_totp_secret', '')
+                and self.admin_totp_enabled_var.get()
+                and self.admin_totp_only_var.get()
+            )
 
         config.port = int(self.port_var.get() or 12345)
         config.cleanup_time = self.cleanup_time_var.get()

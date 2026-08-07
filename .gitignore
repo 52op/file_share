@@ -10,3 +10,4 @@ temp/
 .codebuddy/
 venv_3.8/
 .playwright-mcp/
+config.key
