@@ -2339,71 +2339,92 @@ class FileShareApp:
     def load_config(self):
         config.load()
         self.refresh_dir_list()
-        self.password_var.set(config.global_password)
-        self.admin_password_var.set(config.admin_password)
+        self._set_gui_var('password_var', config.global_password)
+        self._set_gui_var('admin_password_var', config.admin_password)
         # 恢复超级管理员 TOTP 两步验证显示状态
         if hasattr(self, 'admin_totp_enabled_var'):
-            self.admin_totp_secret_var.set(getattr(config, 'admin_totp_secret', ''))
+            self._set_gui_var('admin_totp_secret_var', getattr(config, 'admin_totp_secret', ''))
             self.admin_totp_enabled_var.set(bool(getattr(config, 'admin_totp_secret', '')))
             self.admin_totp_entry.configure(state="readonly" if self.admin_totp_enabled_var.get() else "normal")
             # 恢复"仅验证码登录(免密)"开关，避免GUI保存时用过期的False覆盖已开启的设置
             if hasattr(self, 'admin_totp_only_var'):
-                self.admin_totp_only_var.set(bool(getattr(config, 'admin_totp_only', False)))
-        self.port_var.set(str(config.port))
-        self.cleanup_time_var.set(config.cleanup_time)
-        self.auto_cleanup_var.set(config.auto_cleanup)
+                self._set_gui_var('admin_totp_only_var', bool(getattr(config, 'admin_totp_only', False)))
+        self._set_gui_var('port_var', str(config.port))
+        self._set_gui_var('cleanup_time_var', config.cleanup_time)
+        self._set_gui_var('auto_cleanup_var', config.auto_cleanup)
+
+    def _set_gui_var(self, name, value):
+        """设置GUI变量并记录基线，用于保存/启动时判断该字段是否被用户改动过"""
+        if not hasattr(self, '_var_baseline'):
+            self._var_baseline = {}
+        getattr(self, name).set(value)
+        self._var_baseline[name] = value
+
+    def _gui_var_changed(self, name):
+        """GUI当前变量是否相对基线不同（即用户是否改动了该字段）"""
+        if not hasattr(self, '_var_baseline'):
+            self._var_baseline = {}
+        return getattr(self, name).get() != self._var_baseline.get(name)
 
     def refresh_vars_from_config(self):
-        """网页保存配置后刷新窗体var（不重新加载磁盘，不重建目录，避免覆盖GUI编辑）"""
+        """网页保存配置后刷新GUI变量（同时更新基线，避免覆盖网页端最新值）"""
         if hasattr(self, 'password_var'):
-            self.password_var.set(config.global_password)
+            self._set_gui_var('password_var', config.global_password)
         if hasattr(self, 'admin_password_var'):
-            self.admin_password_var.set(config.admin_password)
+            self._set_gui_var('admin_password_var', config.admin_password)
         if hasattr(self, 'admin_totp_enabled_var'):
-            self.admin_totp_secret_var.set(getattr(config, 'admin_totp_secret', ''))
+            self._set_gui_var('admin_totp_secret_var', getattr(config, 'admin_totp_secret', ''))
             self.admin_totp_enabled_var.set(bool(getattr(config, 'admin_totp_secret', '')))
             self.admin_totp_entry.configure(state="readonly" if self.admin_totp_enabled_var.get() else "normal")
             if hasattr(self, 'admin_totp_only_var'):
-                self.admin_totp_only_var.set(bool(getattr(config, 'admin_totp_only', False)))
+                self._set_gui_var('admin_totp_only_var', bool(getattr(config, 'admin_totp_only', False)))
         if hasattr(self, 'port_var'):
-            self.port_var.set(str(config.port))
+            self._set_gui_var('port_var', str(config.port))
         if hasattr(self, 'cleanup_time_var'):
-            self.cleanup_time_var.set(config.cleanup_time)
+            self._set_gui_var('cleanup_time_var', config.cleanup_time)
         if hasattr(self, 'auto_cleanup_var'):
-            self.auto_cleanup_var.set(config.auto_cleanup)
+            self._set_gui_var('auto_cleanup_var', config.auto_cleanup)
 
     def save_config(self):
-        # 检查全局密码是否变化
-        if config.global_password != self.password_var.get():
+        # 全局密码：仅当用户在GUI改动过时才回写，保留网页端最新值
+        if self._gui_var_changed('password_var'):
+            config.global_password = self.password_var.get()
             password_change_timestamps["global"] = time.time()
 
-        # 只有当新的管理员密码非空时才进行修改
+        # 管理员密码：仅当新密码非空时才修改（保持原有策略）
         new_admin_password = self.admin_password_var.get()
         if new_admin_password and config.admin_password != new_admin_password:
             password_change_timestamps["admin"] = time.time()
             config.admin_password = new_admin_password
 
-        config.global_password = self.password_var.get()
-
-        # 保存超级管理员 TOTP 两步验证密钥
-        if hasattr(self, 'admin_totp_enabled_var'):
+        # 超级管理员 TOTP 两步验证密钥
+        if hasattr(self, 'admin_totp_enabled_var') and self._gui_var_changed(
+            'admin_totp_secret_var'
+        ):
             if self.admin_totp_enabled_var.get():
                 config.admin_totp_secret = self.admin_totp_secret_var.get().strip()
             else:
                 config.admin_totp_secret = ""
-        # 保存超级管理员 TOTP 仅验证码登录(免密) 开关（仅当TOTP启用时有效）
-        if hasattr(self, 'admin_totp_enabled_var'):
+        # 仅验证码登录(免密) 开关：仅当用户改动过时才回写，避免覆盖网页端最新设置
+        if hasattr(self, 'admin_totp_only_var') and self._gui_var_changed(
+            'admin_totp_only_var'
+        ):
             config.admin_totp_only = bool(
                 getattr(config, 'admin_totp_secret', '')
                 and self.admin_totp_enabled_var.get()
                 and self.admin_totp_only_var.get()
             )
 
-        config.port = int(self.port_var.get() or 12345)
-        config.cleanup_time = self.cleanup_time_var.get()
-        config.auto_cleanup = self.auto_cleanup_var.get()
+        # 端口/清理选项：仅当用户改动过时才回写
+        if self._gui_var_changed('port_var'):
+            config.port = int(self.port_var.get() or 12345)
+        if self._gui_var_changed('cleanup_time_var'):
+            config.cleanup_time = self.cleanup_time_var.get()
+        if self._gui_var_changed('auto_cleanup_var'):
+            config.auto_cleanup = self.auto_cleanup_var.get()
+
         config.save()
-        # 保存后立即重新加载配置
+        # 保存后立即重新加载配置（同步GUI变量与基线）
         self.load_config()
         self.check_and_prompt_restart()
         flask_app.logger.info(f"配置已保存并实时生效")
@@ -2659,7 +2680,7 @@ class FileShareApp:
             self.log_area.see(END)
             return
 
-        port = int(self.port_var.get() or 12345)
+        port = int(config.port)
         runningPort = port
         ip = get_local_ip()
         ipv6 = get_global_ipv6()
