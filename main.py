@@ -1900,22 +1900,24 @@ class FileShareApp:
         ttk.Label(admin_totp_row2, text="启用TOTP后可用：登录时只需6位验证码，免密码").pack(side=LEFT, padx=4)
         self.toggle_admin_totp()  # 同步初始状态：未启用TOTP时免密置灰
 
+        # 开关框架
+        log_switch_frame = ttk.Frame(settings_frame)
+        log_switch_frame.pack(fill=X, pady=5)
+
         # 端口设置
-        port_frame = ttk.Frame(settings_container)
-        port_frame.pack(side=LEFT, padx=5, fill=X, expand=YES)
+        port_frame = ttk.Frame(log_switch_frame)
+        port_frame.pack(side=LEFT, padx=5)
         ttk.Label(port_frame, text="端口号:").pack(side=LEFT)
-        ttk.Entry(port_frame, textvariable=self.port_var).pack(
-            side=LEFT, fill=X, expand=YES
-        )
+        ttk.Entry(
+            port_frame,
+            textvariable=self.port_var,
+            width=8
+        ).pack(side=LEFT)
         ToolTip(
             port_frame,
             f"HTTP服务监听端口号也就是用户WEB访问端口号\n\n "
             f"如：http://{get_local_ip()}:{self.port_var.get()}",
         )
-
-        # 开关框架
-        log_switch_frame = ttk.Frame(settings_frame)
-        log_switch_frame.pack(fill=X, pady=5)
 
         # 添加清理间隔设置
         ttk.Label(log_switch_frame, text="清理间隔(秒):").pack(side=tk.LEFT)

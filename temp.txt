@@ -8,6 +8,7 @@ Flask
 netifaces
 openpyxl
 Pillow
+pyotp
 pystray
 pywin32
 Requests

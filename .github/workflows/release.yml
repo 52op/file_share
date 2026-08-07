@@ -45,6 +45,7 @@ jobs:
           pip install "cryptography==3.4.8"
           python -c "import netifaces; print('netifaces ok:', netifaces.__version__)"
           python -c "import pystray; print('pystray ok:', pystray.__version__)"
+          python -c "import pyotp; print('pyotp ok:', pyotp.__name__)"
           python -c "import cryptography; print('cryptography ok:', cryptography.__version__)"
           pip install "pyinstaller==5.13.2"
 
