@@ -133,6 +133,18 @@ jobs:
           # 写入 release body 文件
           $body | Set-Content -Path release_body.md -Encoding UTF8
 
+          # ---------- 诊断输出（排查Changelog不显示用，可保留可删） ----------
+          Write-Output "TAG=$tag"
+          Write-Output "PREV_TAG=$prevTag"
+          if ($prevTag) {
+            $cnt = $(git log --oneline "$prevTag..$tag" 2>$null | Measure-Object -Line).Lines
+            Write-Output "COMMIT_COUNT=$cnt"
+            Write-Output "FIRST3_LOG=$(git log --oneline "$prevTag..$tag" 2>$null | Select-Object -First 3 | Out-String)"
+          }
+          if ($body -match '本次更新内容') { Write-Output "HAS_CHANGELOG=true" } else { Write-Output "HAS_CHANGELOG=false" }
+          Write-Output "BODY_FILE=$(Test-Path release_body.md)"
+          git describe --tags --abbrev=0 HEAD 2>$null | ForEach-Object { Write-Output "DESCRIBE_HEAD=$_" }
+
       - name: Package artifacts
         shell: pwsh
         run: |
