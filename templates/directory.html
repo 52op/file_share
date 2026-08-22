@@ -486,11 +486,14 @@
                             <span id="summaryText" class="fw-semibold"></span>
                             <button type="button" class="btn btn-sm btn-link d-none" id="toggleDetailBtn">查看明细 ▾</button>
                         </div>
-                        <div class="progress mb-1">
+                        <div class="progress mb-1" style="height:8px">
                             <div class="progress-bar" id="summaryProgress" role="progressbar" style="width: 0%"
                                  aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
-                        <div id="summaryStatus" class="text-muted small"></div>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span id="summaryStatus" class="text-muted small"></span>
+                            <span id="uploadSpeed" class="text-muted small fw-bold" style="min-width:72px;text-align:right"></span>
+                        </div>
                         <!-- 失败重试按钮（上传结束后显示） -->
                         <div id="uploadResultArea" class="mt-2 d-none">
                             <button type="button" class="btn btn-sm btn-warning" id="uploadRetryBtn" onclick="retryFailedUploads()">重试失败项</button>
@@ -782,6 +785,23 @@
             return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
         }
 
+        // 全局上传速率统计（用于进度条右侧实时显示）
+        let _speedBytes = 0;
+        let _speedStart = 0;
+        function recordUploadByte(n) {
+            _speedBytes += n || 0;
+            if (!_speedStart) _speedStart = performance.now();
+        }
+        function tickUploadSpeed() {
+            const el = document.getElementById('uploadSpeed');
+            if (!el) return;
+            const elapsed = (performance.now() - _speedStart) / 1000;
+            if (elapsed < 0.5 || _speedBytes === 0) return;
+            const bps = _speedBytes / elapsed;
+            el.textContent = formatSpeed(bps);
+        }
+        setInterval(tickUploadSpeed, 1000);
+
         // 对话框显示函数
         function showUploadDialog() {
             taskDetail.innerHTML = '';
@@ -813,6 +833,9 @@
         const uploadUrl = '/api/upload/{{ dir_obj.alias }}';
         // 后端会话标识前缀，用于拼接安全 file_id，防止跨用户并发污染
         let uploadInitPrefix = '';
+        // 从配置读取的上传参数（可在 GUI/网页设置中调整）
+        const MAX_CONCURRENT = {{ upload_concurrency }};
+        const CHUNK_SIZE_DEFAULT = {{ upload_chunk_size }};
 
         // 从后端获取当前会话的上传前缀（异步，startUpload 前调用）
         async function fetchUploadPrefix() {
@@ -830,11 +853,13 @@
         }
 
         // 根据文件大小自适应分片大小：慢链路下使用更小的分片，降低单个分片传输时间，减少超时重试
+        // 基准分片大小从配置读取（upload_chunk_size），可按比例缩放
         function getChunkSize(fileSize) {
-            if (fileSize > 1024 * 1024 * 1024) return 1024 * 1024 * 2;   // >1GB 2MB
-            if (fileSize > 256 * 1024 * 1024) return 1024 * 1024 * 1;    // >256MB 1MB
-            if (fileSize > 16 * 1024 * 1024) return 512 * 1024;          // >16MB 512KB
-            return 256 * 1024;                                           // 默认 256KB
+            const base = CHUNK_SIZE_DEFAULT;
+            if (fileSize > 1024 * 1024 * 1024) return base * 2;
+            if (fileSize > 256 * 1024 * 1024) return base;
+            if (fileSize > 16 * 1024 * 1024) return base / 2;
+            return base;
         }
 
         // 查询服务器已收到多少分片（用于失败续传和真实进度）
@@ -901,6 +926,7 @@
                     } catch (e) {
                         // 响应是纯文本（最终分片返回 Success），忽略
                     }
+                    recordUploadByte(chunkSize);
                     return { uploaded, durationMs: performance.now() - startTime };
                 } catch (error) {
                     clearTimeout(timer);

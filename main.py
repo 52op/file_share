@@ -468,6 +468,8 @@ class Config:
         self.auto_cleanup = True  # 添加auto_cleanup属性并设置默认值
         self.session_timeout = 600  # 会话空闲超时（秒），0=禁用超时
         self.upload_timeout = 1800  # Cheroot channel_timeout：单个上传请求最长处理时间（秒），防止大文件分片被服务端切断
+        self.upload_concurrency = 5  # 前端同时上传文件数，内网可调大
+        self.upload_chunk_size = 1048576  # 分片大小（字节），默认1MB，内网高速链路可调大
 
         # SSL相关配置
         self.ssl_enabled = False  # 是否启用SSL
@@ -507,6 +509,8 @@ class Config:
             "upload_temp_dir": self.upload_temp_dir,  # 新增：保存上传临时目录
             "session_timeout": self.session_timeout,  # 会话空闲超时（秒）
             "upload_timeout": self.upload_timeout,  # Cheroot channel_timeout（秒）
+            "upload_concurrency": self.upload_concurrency,  # 前端并发上传文件数
+            "upload_chunk_size": self.upload_chunk_size,  # 分片大小（字节）
             # SSL相关配置
             "ssl_enabled": self.ssl_enabled,
             "ssl_port": self.ssl_port,
@@ -561,6 +565,12 @@ class Config:
                 self.upload_timeout = data.get(
                     "upload_timeout", 1800
                 )  # Cheroot channel_timeout（秒）
+                self.upload_concurrency = data.get(
+                    "upload_concurrency", 5
+                )  # 前端并发上传文件数
+                self.upload_chunk_size = data.get(
+                    "upload_chunk_size", 1048576
+                )  # 分片大小（字节），1048576=1MB
                 # SSL相关配置
                 self.ssl_enabled = data.get("ssl_enabled", False)
                 self.ssl_port = data.get("ssl_port", 443)
@@ -1648,6 +1658,8 @@ class FileShareApp:
         self.port_var = tk.StringVar(value="12345")
         self.cleanup_time_var = tk.IntVar(value=config.cleanup_time)
         self.auto_cleanup_var = tk.BooleanVar(value=config.auto_cleanup)
+        self.upload_concurrency_var = tk.IntVar(value=config.upload_concurrency)
+        self.upload_chunk_size_var = tk.IntVar(value=config.upload_chunk_size // 1048576)
         self.about_window = None
 
     def create_gui(self):
@@ -1947,6 +1959,39 @@ class FileShareApp:
         ToolTip(
             self.auto_cleanup_checkbox,
             "启用此选项将自动清理用户打包下载产生临时文件和过期的共享链接。",
+        )
+
+        # 上传并发数设置
+        upload_frame = ttk.Frame(log_switch_frame)
+        upload_frame.pack(side=LEFT, padx=15)
+        ttk.Label(upload_frame, text="上传并发:").pack(side=tk.LEFT)
+        ttk.Spinbox(
+            upload_frame,
+            from_=1,
+            to=20,
+            textvariable=self.upload_concurrency_var,
+            width=3,
+        ).pack(side=tk.LEFT)
+        ToolTip(
+            upload_frame,
+            "同时上传的文件数量，内网高速链路可调大（5-10）",
+        )
+
+        # 分片大小设置（MB）
+        chunk_frame = ttk.Frame(log_switch_frame)
+        chunk_frame.pack(side=LEFT, padx=15)
+        ttk.Label(chunk_frame, text="分片大小(MB):").pack(side=tk.LEFT)
+        ttk.Spinbox(
+            chunk_frame,
+            from_=0.25,
+            to=16,
+            textvariable=self.upload_chunk_size_var,
+            width=3,
+            increment=0.25,
+        ).pack(side=tk.LEFT)
+        ToolTip(
+            chunk_frame,
+            "每个分片的大小（MB），内网高速链路可调大（1-4）以减少请求次数",
         )
 
         # 保存按钮
@@ -2397,9 +2442,13 @@ class FileShareApp:
         self._set_gui_var('port_var', str(config.port))
         self._set_gui_var('cleanup_time_var', config.cleanup_time)
         self._set_gui_var('auto_cleanup_var', config.auto_cleanup)
+        self._set_gui_var('upload_concurrency_var', config.upload_concurrency)
+        self._set_gui_var('upload_chunk_size_var', config.upload_chunk_size // 1048576)
 
     def _set_gui_var(self, name, value):
         """设置GUI变量并记录基线，用于保存/启动时判断该字段是否被用户改动过"""
+        if not hasattr(self, name):
+            return
         if not hasattr(self, '_var_baseline'):
             self._var_baseline = {}
         getattr(self, name).set(value)
@@ -2407,6 +2456,8 @@ class FileShareApp:
 
     def _gui_var_changed(self, name):
         """GUI当前变量是否相对基线不同（即用户是否改动了该字段）"""
+        if not hasattr(self, name):
+            return False
         if not hasattr(self, '_var_baseline'):
             self._var_baseline = {}
         return getattr(self, name).get() != self._var_baseline.get(name)
@@ -2429,6 +2480,10 @@ class FileShareApp:
             self._set_gui_var('cleanup_time_var', config.cleanup_time)
         if hasattr(self, 'auto_cleanup_var'):
             self._set_gui_var('auto_cleanup_var', config.auto_cleanup)
+        if hasattr(self, 'upload_concurrency_var'):
+            self._set_gui_var('upload_concurrency_var', config.upload_concurrency)
+        if hasattr(self, 'upload_chunk_size_var'):
+            self._set_gui_var('upload_chunk_size_var', config.upload_chunk_size // 1048576)
         if hasattr(self, 'refresh_dir_list'):
             self.refresh_dir_list()
 
@@ -2496,6 +2551,10 @@ class FileShareApp:
             config.cleanup_time = self.cleanup_time_var.get()
         if self._gui_var_changed('auto_cleanup_var'):
             config.auto_cleanup = self.auto_cleanup_var.get()
+        if self._gui_var_changed('upload_concurrency_var'):
+            config.upload_concurrency = int(self.upload_concurrency_var.get() or 5)
+        if self._gui_var_changed('upload_chunk_size_var'):
+            config.upload_chunk_size = int((self.upload_chunk_size_var.get() or 1) * 1048576)
 
         config.save()
         # 保存后立即重新加载配置（同步GUI变量与基线）

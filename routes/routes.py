@@ -368,6 +368,8 @@ def inject_global_vars():
         'logo_image_url': config.logo_image_url,
         'session_timeout_ms': config.session_timeout * 1000,
         'session_timeout_minutes': max(0, config.session_timeout // 60),
+        'upload_concurrency': config.upload_concurrency,
+        'upload_chunk_size': config.upload_chunk_size,
         'is_authenticated': bool(
             session.get('admin')
             or session.get('auth')
