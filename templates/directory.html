@@ -1111,6 +1111,8 @@
             if (btn) btn.disabled = true;
 
             // 重新从第0项开始，只处理失败的
+            // 先获取前缀，确保 fileId 格式正确
+            await fetchUploadPrefix();
             async function retryOne(i) {
                 if (i >= failedIndices.length) {
                     if (btn) btn.disabled = false;
