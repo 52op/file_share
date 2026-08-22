@@ -1093,7 +1093,7 @@
         }
 
         // 重试失败的任务
-        function retryFailedUploads() {
+        async function retryFailedUploads() {
             const failedIndices = [];
             uploadTasks.forEach((task, i) => {
                 const stateEl = document.getElementById(`uploadTaskState_${i}`);
