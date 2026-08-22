@@ -891,8 +891,8 @@ def upload_file(alias):
     # 净化 current_path：提取 sub_path 并校验安全
     sub_path = ''
     path_parts = [p for p in current_path.strip('/').split('/') if p]
-    if len(path_parts) > 1:
-        sub_path_raw = '/'.join(path_parts[1:])  # 去掉 alias 段
+    if len(path_parts) > 2:
+        sub_path_raw = '/'.join(path_parts[2:])  # 去掉 'dir' 和 alias 两段
         sub_path = safe_relative_path(sub_path_raw)
         if sub_path is None:
             return "Invalid current_path", 400
