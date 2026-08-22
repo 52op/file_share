@@ -254,10 +254,10 @@ def cleanup_temp_files_and_expired_links():
                     file_path = os.path.join(temp_dir, filename)
                     if os.path.isfile(file_path):
                         try:
-                            # 如果文件存在超过一天，则删除
-                            # if now - os.path.getmtime(file_path) > 24 * 60 * 60:
-                            os.remove(file_path)
-                            flask_app.logger.info(f"删除临时文件: {file_path}")
+                            # 只删除超过24小时的临时ZIP，正在下载中的文件不会误删
+                            if now - os.path.getmtime(file_path) > 24 * 60 * 60:
+                                os.remove(file_path)
+                                flask_app.logger.info(f"删除过期临时文件: {file_path}")
                         except PermissionError as e:
                             flask_app.logger.info(f"无法删除文件 {file_path}: 文件正在使用中。错误: {e}")
                         except Exception as e:
@@ -1783,11 +1783,24 @@ def update_settings():
     except (TypeError, ValueError):
         config.session_timeout = getattr(config, 'session_timeout', 600)
 
+    # 上传性能设置
+    try:
+        config.upload_concurrency = max(1, int(data.get('upload_concurrency', config.upload_concurrency)))
+    except (TypeError, ValueError):
+        config.upload_concurrency = getattr(config, 'upload_concurrency', 5)
+    try:
+        config.upload_chunk_size = max(262144, int(data.get('upload_chunk_size', config.upload_chunk_size)))
+    except (TypeError, ValueError):
+        config.upload_chunk_size = getattr(config, 'upload_chunk_size', 1048576)
+
     config.save()
     # Config.save 内部会在保存后统一通知GUI同步窗体，无需再显式调用
-
     flask_app.logger.info(f"{client_info} 更新了系统设置")
-    return 'Success', 200
+    return jsonify({
+        'ok': True,
+        'upload_concurrency': config.upload_concurrency,
+        'upload_chunk_size': config.upload_chunk_size,
+    })
 
 
 @flask_app.route('/api/totp', methods=['GET'])

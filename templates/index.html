@@ -282,6 +282,11 @@
                                     <i class="bi bi-shield-lock me-1"></i>安全设置
                                 </button>
                             </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="perf-tab" data-bs-toggle="tab" data-bs-target="#perf-settings" type="button" role="tab">
+                                    <i class="bi bi-gear me-1"></i>性能设置
+                                </button>
+                            </li>
                         </ul>
 
                         <div class="tab-content mt-3" id="settingsTabContent">
@@ -312,8 +317,24 @@
                                             <img src="{% if logo_image_url.startswith('http') %}{{ logo_image_url }}{% else %}{{ url_for('static', filename=logo_image_url) }}{% endif %}"
                                                  alt="Logo预览" height="30" class="border rounded">
                                         {% endif %}
-                                    </div>
+                            </div>
+                            <!-- 性能设置 -->
+                            <div class="tab-pane fade" id="perf-settings" role="tabpanel">
+                                <div class="mb-3">
+                                    <label class="form-label">上传并发数</label>
+                                    <input type="number" class="form-control" name="upload_concurrency"
+                                           min="1" max="20" value="{{ upload_concurrency }}">
+                                    <small class="text-muted">同时上传的文件数，内网高速链路可调大（5-10）</small>
                                 </div>
+                                <div class="mb-3">
+                                    <label class="form-label">分片大小 (MB)</label>
+                                    <input type="number" class="form-control" name="upload_chunk_size"
+                                           min="0.25" max="16" step="0.25"
+                                           value="{{ upload_chunk_size // 1048576 }}">
+                                    <small class="text-muted">每个分片的大小（MB），内网可调大（1-4）减少请求次数</small>
+                                </div>
+                            </div>
+                        </div>
                             </div>
 
                             <!-- 安全设置 -->
@@ -675,17 +696,22 @@
                     alert('更新页面设置失败: ' + err.message);
                 }
             } else {
-                // 处理安全设置（原有逻辑）
+                // 安全设置 / 性能设置
                 const formData = new FormData(event.target);
 
                 try {
-                    await API.updateSettings(formData);
+                    const resp = await API.updateSettings(formData);
+                    const data = await resp.json();
                     const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
                     modal.hide();
-                    alert('安全设置已更新');
-                    location.reload();
+
+                    // 将新配置写入全局变量，供 directory.html 的上传逻辑实时读取
+                    if (data.upload_concurrency) window._uploadConcurrency = data.upload_concurrency;
+                    if (data.upload_chunk_size)   window._uploadChunkSize   = data.upload_chunk_size;
+
+                    alert('设置已更新');
                 } catch (err) {
-                    alert('更新安全设置失败: ' + err.message);
+                    alert('更新设置失败: ' + err.message);
                 }
             }
         }
