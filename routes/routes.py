@@ -918,7 +918,7 @@ def upload_file(alias):
         file.save(final_path)
         client_info = get_client_info()
         flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
-        return jsonify({'file_id': file_id, 'uploaded_chunks': 1}), 200
+        return "Success", 200
 
     # 处理分片上传
     temp_dir = os.path.join(config.upload_temp_dir, file_id)
