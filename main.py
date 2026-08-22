@@ -467,6 +467,7 @@ class Config:
         self.cleanup_time = 3600  # 定义清理临时文件及过期分享链接函数间隔时间
         self.auto_cleanup = True  # 添加auto_cleanup属性并设置默认值
         self.session_timeout = 600  # 会话空闲超时（秒），0=禁用超时
+        self.upload_timeout = 1800  # Cheroot channel_timeout：单个上传请求最长处理时间（秒），防止大文件分片被服务端切断
 
         # SSL相关配置
         self.ssl_enabled = False  # 是否启用SSL
@@ -505,6 +506,7 @@ class Config:
             "auto_cleanup": self.auto_cleanup,  # 新增：保存自动清理设置
             "upload_temp_dir": self.upload_temp_dir,  # 新增：保存上传临时目录
             "session_timeout": self.session_timeout,  # 会话空闲超时（秒）
+            "upload_timeout": self.upload_timeout,  # Cheroot channel_timeout（秒）
             # SSL相关配置
             "ssl_enabled": self.ssl_enabled,
             "ssl_port": self.ssl_port,
@@ -556,6 +558,9 @@ class Config:
                 self.session_timeout = data.get(
                     "session_timeout", 600
                 )  # 会话空闲超时（秒），0=禁用
+                self.upload_timeout = data.get(
+                    "upload_timeout", 1800
+                )  # Cheroot channel_timeout（秒）
                 # SSL相关配置
                 self.ssl_enabled = data.get("ssl_enabled", False)
                 self.ssl_port = data.get("ssl_port", 443)
@@ -1201,7 +1206,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
                             port=config.port,
                             threads=get_optimal_threads(),
                             connection_limit=1000,
-                            channel_timeout=300,
+                            channel_timeout=config.upload_timeout,
                         )
 
                         # 保存服务器引用
@@ -1226,7 +1231,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
                                             key_file=key_path,
                                             threads=get_optimal_threads(),
                                             connection_limit=1000,
-                                            channel_timeout=300,
+                                            channel_timeout=config.upload_timeout,
                                         )
                                         # 保存服务器引用
                                         self.https_servers.append(https_server)
@@ -2837,7 +2842,7 @@ class FileShareApp:
                                 port=port,
                                 threads=optimal_threads,
                                 connection_limit=1000,
-                                channel_timeout=300,
+                                channel_timeout=config.upload_timeout,
                             )
                             self.server_ipv6 = create_cheroot_http_server(
                                 flask_app,
@@ -2845,7 +2850,7 @@ class FileShareApp:
                                 port=port,
                                 threads=optimal_threads,
                                 connection_limit=1000,
-                                channel_timeout=300,
+                                channel_timeout=config.upload_timeout,
                             )
 
                             # 如果启用SSL，创建HTTPS服务器（使用Cheroot原生SSL）
@@ -2878,7 +2883,7 @@ class FileShareApp:
                                                     key_file=key_path,
                                                     threads=optimal_threads,
                                                     connection_limit=1000,
-                                                    channel_timeout=300,
+                                                    channel_timeout=config.upload_timeout,
                                                 )
                                             )
 
@@ -2896,7 +2901,7 @@ class FileShareApp:
                                                             key_file=key_path,
                                                             threads=optimal_threads,
                                                             connection_limit=1000,
-                                                            channel_timeout=300,
+                                                            channel_timeout=config.upload_timeout,
                                                         )
                                                     )
                                                 except Exception as ipv6_error:

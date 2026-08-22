@@ -59,6 +59,43 @@ def safe_join_path(base_path, *paths):
         flask_app.logger.warning(f"路径安全检查失败: {e}")
         raise ValueError("Invalid path")
 
+
+def _upload_session_prefix():
+    """为当前 HTTP 会话生成唯一的上传标识前缀，防止不同用户或不同浏览器
+    的并发同名文件写入同一临时目录。
+
+    优先使用管理员 session 信息；访客用 remote_addr + 会话起始时间兜底。
+    """
+    if session.get('admin'):
+        return 'admin'
+    for key in session:
+        if key.startswith('dir_admin_') and not key.endswith('_time'):
+            return f'dir_{key[10:]}'
+    for key in session:
+        if key.startswith('auth_') and not key.endswith('_time'):
+            return f'view_{key[5:]}'
+    return f'anon_{request.remote_addr}'
+
+
+def generate_upload_file_id(file_size, last_modified, rel_path, prefix=None):
+    """生成安全的分片上传 file_id，包含会话前缀防止跨用户污染。
+
+    参数:
+        file_size: 文件大小
+        last_modified: 文件修改时间戳
+        rel_path: 相对路径
+        prefix: 会话前缀（不传则自动从 session 获取）
+
+    返回:
+        纯字母数字下划线安全字符串，可直接用作文件系统目录名
+    """
+    if prefix is None:
+        prefix = _upload_session_prefix()
+    # 仅允许安全的 base32 风格字符，避免任何路径符号
+    safe_path = re.sub(r'[^a-zA-Z0-9_-]', '_', rel_path)
+    return f"{prefix}_{file_size}_{last_modified}_{safe_path}"
+
+
 # 实例化 share_links/share_manager.py 里面的 ShareManager
 share_manager = ShareManager()    # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
 ip_limiter = IPLimiter()
@@ -830,13 +867,9 @@ def upload_file(alias):
     current_path = urllib.parse.unquote(current_path)
 
     # 获取分片信息
-    chunk_number = request.form.get('chunk_index', 0)  # Changed from 'chunk'
-    chunks = request.form.get('total_chunks', 1)  # Changed from 'chunks'
-    filename = request.form.get('filename')  # Get original filename
-    file_id = request.form.get('identifier')  # Match the frontend parameter name
-
-    if not file_id:
-        return "Missing file identifier", 400
+    chunk_number = request.form.get('chunk_index', 0)
+    chunks = request.form.get('total_chunks', 1)
+    filename = request.form.get('filename')
 
     if not file:
         return "No file", 400
@@ -855,29 +888,37 @@ def upload_file(alias):
     if not dir_obj:
         return "Directory not found", 404
 
-    # 处理目标路径
-    path_parts = current_path.strip('/').split('/')
+    # 净化 current_path：提取 sub_path 并校验安全
+    sub_path = ''
+    path_parts = [p for p in current_path.strip('/').split('/') if p]
     if len(path_parts) > 1:
-        sub_path = '/'.join(path_parts[2:])
-        target_dir = os.path.join(dir_obj.path, sub_path)
-        if not os.path.exists(target_dir):
-            return "Target directory not found", 404
-    else:
-        target_dir = dir_obj.path
+        sub_path_raw = '/'.join(path_parts[1:])  # 去掉 alias 段
+        sub_path = safe_relative_path(sub_path_raw)
+        if sub_path is None:
+            return "Invalid current_path", 400
+    target_dir = safe_join_path(dir_obj.path, sub_path) if sub_path else dir_obj.path
+    if not os.path.isdir(target_dir):
+        return "Target directory not found", 404
 
-    # filename 可能为相对路径（文件夹上传场景，如 "docs/img/a.png"），逐段净化防穿越
+    # filename 可能为相对路径（文件夹上传场景），逐段净化防穿越
     safe_rel = safe_relative_path(filename)
     if safe_rel is None:
         return "Invalid filename", 400
-    final_path = os.path.join(target_dir, *safe_rel.split('/'))
+    final_path = safe_join_path(target_dir, *safe_rel.split('/'))
     os.makedirs(os.path.dirname(final_path), exist_ok=True)
+
+    # 后端安全生成 file_id：含 session 前缀，防止跨用户并发污染
+    # 优先使用前端传来的完整文件大小（分片上传时 stream.tell() 只返回当前分片大小）
+    file_size = int(request.form.get('file_size', 0) or file.content_length or 0)
+    last_mod = int(request.form.get('last_modified', 0) or 0)
+    file_id = generate_upload_file_id(file_size, last_mod, safe_rel)
 
     # 如果是普通上传（非分片）
     if chunks == 1:
         file.save(final_path)
         client_info = get_client_info()
         flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
-        return "Success", 200
+        return jsonify({'file_id': file_id, 'uploaded_chunks': 1}), 200
 
     # 处理分片上传
     temp_dir = os.path.join(config.upload_temp_dir, file_id)
@@ -903,12 +944,13 @@ def upload_file(alias):
 
             client_info = get_client_info()
             flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
-            return "Success", 200
+            return jsonify({'file_id': file_id, 'uploaded_chunks': chunks}), 200
         except Exception as e:
             flask_app.logger.error(f"合并分片失败: {filename}, 错误: {e}")
             return "Chunk merge failed", 500
 
     return jsonify({
+        'file_id': file_id,
         'uploaded_chunks': uploaded_chunks,
         'total_chunks': chunks
     })
@@ -1981,8 +2023,53 @@ def share_batch_download(token):
     )
 
 
+@flask_app.route('/api/upload/init')
+def upload_init():
+    """返回当前会话的上传标识前缀，前端用于拼接 file_id，防止跨用户并发污染。"""
+    return jsonify({'prefix': _upload_session_prefix()})
+
+
+@flask_app.route('/api/keepalive')
+def keepalive():
+    """上传期间心跳接口，刷新会话时间戳防止长时间空转被断开。"""
+    now = time.time()
+    timeout = getattr(config, 'session_timeout', 600)
+    def expire(key):
+        session.pop(key, None)
+    if session.get('admin'):
+        if now - session.get('admin_time', now) > timeout:
+            expire('admin')
+            expire('admin_time')
+        else:
+            session['admin_time'] = now
+    if session.get('auth'):
+        if now - session.get('auth_time', now) > timeout:
+            expire('auth')
+            expire('auth_time')
+        else:
+            session['auth_time'] = now
+    for key in list(session.keys()):
+        if key.startswith('auth_') and not key.startswith('auth_time'):
+            ts = session.get(f'auth_time_{key[5:]}', now)
+            if now - ts > timeout:
+                expire(key)
+                expire(f'auth_time_{key[5:]}')
+            else:
+                session[f'auth_time_{key[5:]}'] = now
+        elif key.startswith('dir_admin_') and not key.startswith('dir_admin_time'):
+            ts = session.get(f'dir_admin_time_{key[10:]}', now)
+            if now - ts > timeout:
+                expire(key)
+                expire(f'dir_admin_time_{key[10:]}')
+            else:
+                session[f'dir_admin_time_{key[10:]}'] = now
+    return jsonify({'ok': True})
+
+
 @flask_app.route('/api/upload/status/<file_id>')
+@check_directory_admin_permission
 def check_upload_status(file_id):
+    # file_id 已由后端 generate_upload_file_id 生成，仅含安全字符，无需额外净化
     temp_dir = os.path.join(config.upload_temp_dir, file_id)
     uploaded_chunks = len(os.listdir(temp_dir)) if os.path.exists(temp_dir) else 0
     return jsonify({'uploaded_chunks': uploaded_chunks})

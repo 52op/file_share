@@ -491,6 +491,10 @@
                                  aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
                         <div id="summaryStatus" class="text-muted small"></div>
+                        <!-- 失败重试按钮（上传结束后显示） -->
+                        <div id="uploadResultArea" class="mt-2 d-none">
+                            <button type="button" class="btn btn-sm btn-warning" id="uploadRetryBtn" onclick="retryFailedUploads()">重试失败项</button>
+                        </div>
                     </div>
 
                     <!-- 明细区（默认折叠） -->
@@ -749,8 +753,17 @@
         }
 
         // 更新总进度条与状态行
-        function updateSummary(done, total, statusText) {
-            const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+        // taskChunks：每个任务的已完成分片数，与 taskChunkTotal 同步更新
+        // 进度按分片权重计算，避免大文件上传时进度条卡在 0% 直到最后
+        function updateSummary(done, total, statusText, taskChunks, taskChunkTotal) {
+            let pct;
+            if (taskChunks && taskChunkTotal) {
+                const totalExpected = taskChunkTotal.reduce((a, b) => a + b, 0);
+                const totalDone = taskChunks.reduce((a, b) => a + b, 0);
+                pct = totalExpected > 0 ? Math.round((totalDone / totalExpected) * 100) : 0;
+            } else {
+                pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+            }
             summaryProgress.style.width = `${pct}%`;
             summaryProgress.setAttribute('aria-valuenow', pct);
             if (statusText) summaryStatus.textContent = statusText;
@@ -798,6 +811,23 @@
         const UPLOAD_MAX_RETRIES = 3;
         // 分片上传地址
         const uploadUrl = '/api/upload/{{ dir_obj.alias }}';
+        // 后端会话标识前缀，用于拼接安全 file_id，防止跨用户并发污染
+        let uploadInitPrefix = '';
+
+        // 从后端获取当前会话的上传前缀（异步，startUpload 前调用）
+        async function fetchUploadPrefix() {
+            if (uploadInitPrefix) return uploadInitPrefix;
+            try {
+                const resp = await fetch('/api/upload/init', { method: 'GET' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    uploadInitPrefix = data.prefix || '';
+                }
+            } catch (e) {
+                console.warn('获取上传前缀失败，将使用空前缀:', e);
+            }
+            return uploadInitPrefix;
+        }
 
         // 根据文件大小自适应分片大小：慢链路下使用更小的分片，降低单个分片传输时间，减少超时重试
         function getChunkSize(fileSize) {
@@ -834,6 +864,9 @@
             formData.append('total_chunks', chunks);
             formData.append('identifier', fileId);
             formData.append('filename', relPath || file.name);
+            // 前端传递完整文件大小和修改时间，后端据此生成安全的 file_id（避免 stream.tell() 只返回分片大小）
+            formData.append('file_size', file.size);
+            formData.append('last_modified', file.lastModified || 0);
 
             let retries = UPLOAD_MAX_RETRIES;
             let delay = 2000;
@@ -887,9 +920,10 @@
         }
 
         // 生成稳定的文件标识：基于大小+修改时间+相对路径，保证刷新/重选后可续传，且子目录同名文件互不冲突
-        function makeFileId(file, relPath) {
+        // prefix 由后端会话生成，防止不同用户/浏览器并发同名文件污染同一临时目录
+        function makeFileId(file, relPath, prefix) {
             const lastMod = file.lastModified || 0;
-            return `${file.size}_${lastMod}_${relPath}`;
+            return `${prefix}_${file.size}_${lastMod}_${relPath}`;
         }
 
         // 上传一个目录任务（调用后端 /api/mkdir）
@@ -918,6 +952,18 @@
                 return;
             }
 
+            // 先获取后端会话前缀，用于生成安全的 file_id
+            await fetchUploadPrefix();
+
+            // 超大文件预检：单个 >200MB 时弹出确认提示
+            const bigFiles = uploadTasks.filter(t => t.file && t.file.size > 200 * 1024 * 1024);
+            if (bigFiles.length) {
+                const names = bigFiles.map(t => `${t.relPath}（${formatFileSize(t.file.size)}）`).join('\n・');
+                if (!confirm(`检测到 ${bigFiles.length} 个超大文件（>200MB），上传可能需要较长时间。\n\n是否继续？\n・${names}`)) {
+                    return;
+                }
+            }
+
             const currentPath = window.location.pathname;
             const total = uploadTasks.length;
             let done = 0;
@@ -926,78 +972,175 @@
 
             if (uploadBtn) uploadBtn.disabled = true;
 
-            for (let i = 0; i < total; i++) {
-                const task = uploadTasks[i];
+            // 分片进度追踪：按分片权重计算真实进度，而非按任务数
+            const taskChunks = new Array(total).fill(0);
+            const taskChunkTotal = [];
+            let totalChunksExpected = 0;
+            uploadTasks.forEach(t => {
+                if (t.isDir || !t.file) {
+                    taskChunkTotal.push(0);
+                } else {
+                    const c = Math.ceil(t.file.size / getChunkSize(t.file.size));
+                    taskChunkTotal.push(c);
+                    totalChunksExpected += c;
+                }
+            });
 
-                // 目录任务
-                if (task.isDir || !task.file) {
-                    try {
+            // 并发上传控制：最多同时 3 个文件
+            const MAX_CONCURRENT = 3;
+            let running = 0;
+            const taskResults = new Array(total).fill(null);
+
+            // 后台心跳：每隔 5 个分片刷新一次会话，防止长时间空转被断开
+            let keepaliveCounter = 0;
+            async function maybeKeepalive() {
+                keepaliveCounter++;
+                if (keepaliveCounter % 5 !== 0) return;
+                try {
+                    fetch('/api/keepalive', { method: 'GET', keepalive: true }).catch(() => {});
+                } catch (_) {}
+            }
+
+            async function processTask(i) {
+                const task = uploadTasks[i];
+                try {
+                    // 目录任务
+                    if (task.isDir || !task.file) {
                         setTaskState(i, '创建中...', 'text-primary');
-                        updateSummary(done, total, `正在创建目录: ${task.relPath}`);
+                        updateSummary(done, total, `正在创建目录: ${task.relPath}`, taskChunks, taskChunkTotal);
                         await uploadDirectoryTask(task, currentPath);
                         setTaskState(i, '✓ 已创建', 'text-success');
-                    } catch (error) {
-                        console.error(`Error creating dir ${task.relPath}:`, error);
-                        setTaskState(i, '✗ 失败', 'text-danger');
-                        failed++;
+                    } else {
+                        // 文件上传任务
+                        const file = task.file;
+                        const chunkSize = getChunkSize(file.size);
+                        const chunks = Math.ceil(file.size / chunkSize);
+                        const fileId = makeFileId(file, task.relPath, uploadInitPrefix);
+                        let ok = false;
+
+                        try {
+                            setTaskState(i, '查询续传...', 'text-primary');
+                            updateSummary(done, total, `正在上传: ${task.relPath}`, taskChunks, taskChunkTotal);
+
+                            let uploaded = chunks > 1 ? await fetchUploadedChunks(fileId) : 0;
+                            if (uploaded >= chunks) uploaded = 0;
+                            taskChunks[i] = uploaded;
+
+                            for (let chunk = uploaded; chunk < chunks; chunk++) {
+                                updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${chunk + 1}/${chunks}）`, taskChunks, taskChunkTotal);
+                                const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
+                                uploaded = Math.max(realUploaded, chunk + 1);
+                                taskChunks[i] = uploaded;
+                                const speed = chunkSize / (durationMs / 1000);
+                                updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${uploaded}/${chunks} · ${formatSpeed(speed)}）`, taskChunks, taskChunkTotal);
+                                await maybeKeepalive();
+                            }
+                            setTaskState(i, '✓ 完成', 'text-success');
+                            ok = true;
+                        } catch (error) {
+                            console.error(`Error uploading ${task.relPath}:`, error);
+                            setTaskState(i, '✗ 失败', 'text-danger');
+                            failed++;
+                        }
                     }
-                    done++;
-                    updateSummary(done, total, failed > 0 ? `已完成 ${done}/${total}（失败 ${failed}）` : `已完成 ${done}/${total}`);
-                    continue;
-                }
-
-                const file = task.file;
-                const chunkSize = getChunkSize(file.size);
-                const chunks = Math.ceil(file.size / chunkSize);
-                const fileId = makeFileId(file, task.relPath);
-                let ok = false;
-
-                try {
-                    setTaskState(i, '查询续传...', 'text-primary');
-                    updateSummary(done, total, `正在上传: ${task.relPath}`);
-
-                    // 若之前有未完成的同标识分片，先查出已上传数量，实现续传
-                    let uploaded = chunks > 1 ? await fetchUploadedChunks(fileId) : 0;
-                    if (uploaded >= chunks) {
-                        // 全部已上传过（上次可能合并失败），重置为 0 重新上传
-                        uploaded = 0;
-                    }
-
-                    for (let chunk = uploaded; chunk < chunks; chunk++) {
-                        updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${chunk + 1}/${chunks}）`);
-                        const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
-                        uploaded = Math.max(realUploaded, chunk + 1);
-                        // 计算实时速度并展示，让用户确认上传在推进而非卡死
-                        const speed = chunkSize / (durationMs / 1000);
-                        updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${uploaded}/${chunks} · ${formatSpeed(speed)}）`);
-                    }
-                    setTaskState(i, '✓ 完成', 'text-success');
-                    ok = true;
+                    taskResults[i] = { ok: true, index: i };
                 } catch (error) {
-                    console.error(`Error uploading ${task.relPath}:`, error);
-                    setTaskState(i, '✗ 失败', 'text-danger');
-                    failed++;
+                    console.error(`Unexpected error in task ${i}:`, error);
+                    taskResults[i] = { ok: false, index: i };
+                } finally {
+                    done++;
+                    running--;
+                    updateSummary(done, total, failed > 0
+                        ? `已完成 ${done}/${total}（失败 ${failed}）`
+                        : `已完成 ${done}/${total}`, taskChunks, taskChunkTotal);
+                    launchNext();
                 }
+            }
 
-                done++;
-                if (ok) {
-                    updateSummary(done, total, failed > 0 ? `已完成 ${done}/${total}（失败 ${failed}）` : `已完成 ${done}/${total}`);
+            function launchNext() {
+                for (let i = 0; i < total; i++) {
+                    if (taskResults[i] === null && running < MAX_CONCURRENT) {
+                        running++;
+                        processTask(i).catch(e => console.error(e));
+                    }
                 }
+            }
+
+            // 初始启动
+            launchNext();
+
+            // 等待所有任务完成
+            while (done + failed < total) {
+                await new Promise(r => setTimeout(r, 200));
             }
 
             if (uploadBtn) uploadBtn.disabled = false;
 
+            const resultEl = document.getElementById('uploadResultArea');
+            if (resultEl) resultEl.classList.remove('d-none');
+
             if (failed > 0) {
-                updateSummary(done, total, `上传结束：成功 ${total - failed}/${total}，失败 ${failed}。请检查后重试`);
-                setTimeout(() => {
-                    location.reload();
-                }, 1500);
+                updateSummary(done, total, `上传结束：成功 ${total - failed}/${total}，失败 ${failed} 项`);
+                // 显示重试按钮
+                const retryBtn = document.getElementById('uploadRetryBtn');
+                if (retryBtn) retryBtn.classList.remove('d-none');
             } else {
-                updateSummary(done, total, '全部上传成功');
+                updateSummary(done, total, '全部上传成功，即将刷新页面…');
                 setTimeout(() => {
                     location.reload();
-                }, 800);
+                }, 1000);
             }
+        }
+
+        // 重试失败的任务
+        function retryFailedUploads() {
+            const failedIndices = [];
+            uploadTasks.forEach((task, i) => {
+                const stateEl = document.getElementById(`uploadTaskState_${i}`);
+                if (stateEl && stateEl.textContent.includes('失败')) {
+                    failedIndices.push(i);
+                    setTaskState(i, '等待重试...', 'text-warning');
+                }
+            });
+            if (!failedIndices.length) return;
+            // 重新构建仅含失败项的临时任务列表，调用 processTask
+            // 简化：直接重新调用 startUpload，它会重新遍历所有任务（只重传失败的）
+            // 由于 retryBtn 会隐藏，这里手动触发
+            document.getElementById('uploadRetryBtn').classList.add('d-none');
+            const btn = document.getElementById('uploadStartBtn');
+            if (btn) btn.disabled = true;
+
+            // 重新从第0项开始，只处理失败的
+            async function retryOne(i) {
+                if (i >= failedIndices.length) {
+                    if (btn) btn.disabled = false;
+                    return;
+                }
+                const idx = failedIndices[i];
+                const task = uploadTasks[idx];
+                try {
+                    if (task.isDir || !task.file) {
+                        setTaskState(idx, '创建中...', 'text-primary');
+                        await uploadDirectoryTask(task, window.location.pathname);
+                        setTaskState(idx, '✓ 已重试', 'text-success');
+                    } else {
+                        const file = task.file;
+                        const chunkSize = getChunkSize(file.size);
+                        const chunks = Math.ceil(file.size / chunkSize);
+                        const fileId = makeFileId(file, task.relPath, uploadInitPrefix);
+                        for (let chunk = 0; chunk < chunks; chunk++) {
+                            setTaskState(idx, `上传中 ${chunk + 1}/${chunks}`, 'text-primary');
+                            await uploadChunk(file, chunk, chunks, fileId, window.location.pathname, task.relPath);
+                        }
+                        setTaskState(idx, '✓ 已重试', 'text-success');
+                    }
+                } catch (e) {
+                    console.error(`Retry failed for ${task.relPath}:`, e);
+                    setTaskState(idx, '✗ 重试失败', 'text-danger');
+                }
+                retryOne(i + 1);
+            }
+            retryOne(0);
         }
 
 
