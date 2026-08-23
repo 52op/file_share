@@ -132,6 +132,8 @@
                          style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
                 <span id="barSpeed" class="small text-muted" style="min-width:72px;text-align:right"></span>
+                <button id="barResumeBtn" class="btn btn-sm btn-primary py-0 px-2"
+                        style="display:none;font-size:12px" onclick="resumeUpload()" title="重新选择文件继续上传">继续</button>
                 <button id="barCancelBtn" class="btn btn-sm btn-outline-danger py-0 px-2"
                         style="display:none;font-size:12px" onclick="cancelUpload()" title="取消上传">✕</button>
             </div>
@@ -521,7 +523,7 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-secondary" onclick="handleModalCancel()">取消</button>
                     <button type="button" class="btn btn-primary" id="uploadStartBtn" onclick="startUpload()">上传</button>
                 </div>
             </div>
@@ -580,15 +582,44 @@
         const taskDetail = document.getElementById('taskDetail');
 
         // 上传全局状态：modal 关闭时常驻条接管展示
+        const UPLOAD_STATE_KEY = 'fs_upload_state';
         window._currentUpload = { running: false, done: 0, failed: 0, total: 0, cancelled: false };
         window._uploadConcurrency = {{ upload_concurrency }};
         window._uploadChunkSize   = {{ upload_chunk_size }};
 
-        // modal 关闭时：若上传还在进行，展开常驻条；否则收起
+        // 序列化/反序列化上传状态到 sessionStorage，刷新后可恢复
+        function saveUploadState() {
+            try {
+                const u = window._currentUpload;
+                sessionStorage.setItem(UPLOAD_STATE_KEY, JSON.stringify({
+                    running: u.running, done: u.done, failed: u.failed, total: u.total,
+                    cancelled: u.cancelled, taskChunks: u.taskChunks, taskChunkTotal: u.taskChunkTotal,
+                    prefix: uploadInitPrefix, time: Date.now()
+                }));
+            } catch (_) {}
+        }
+        function loadUploadState() {
+            try {
+                const raw = sessionStorage.getItem(UPLOAD_STATE_KEY);
+                if (!raw) return null;
+                const s = JSON.parse(raw);
+                // 超过 24h 的旧状态丢弃
+                if (Date.now() - s.time > 24 * 60 * 60 * 1000) { sessionStorage.removeItem(UPLOAD_STATE_KEY); return null; }
+                return s;
+            } catch (_) { return null; }
+        }
+        function clearUploadState() {
+            try { sessionStorage.removeItem(UPLOAD_STATE_KEY); } catch (_) {}
+        }
+
+        // modal 关闭时：若上传还在进行，展开常驻条并清除遮罩；否则收起
         document.getElementById('uploadDialog').addEventListener('hidden.bs.modal', () => {
             const u = window._currentUpload;
             const bar = document.getElementById('persistentUploadBar');
             const summary = document.getElementById('uploadSummary');
+            // 确保 Bootstrap 遮罩完全移除
+            const backdrop = document.querySelector('.modal-backdrop');
+            if (backdrop) backdrop.remove();
             if (u && u.running) {
                 summary.classList.add('d-none');
                 bar.classList.remove('d-none');
@@ -600,9 +631,12 @@
             }
         });
 
-        // 每 200ms 刷新常驻条
+        // 每 200ms 刷新常驻条，并持久化状态
         setInterval(() => {
-            if (window._currentUpload?.running) tickPersistentBar();
+            if (window._currentUpload?.running) {
+                tickPersistentBar();
+                saveUploadState();
+            }
         }, 200);
 
         // 取消上传
@@ -611,6 +645,61 @@
             const btn = document.getElementById('barCancelBtn');
             if (btn) btn.disabled = true;
         }
+
+        // 模态框"取消"按钮：上传进行中时取消任务，否则直接关闭弹窗
+        function handleModalCancel() {
+            if (window._currentUpload?.running) {
+                cancelUpload();
+                const modalEl = document.getElementById('uploadDialog');
+                const modal = bootstrap.Modal.getInstance(modalEl);
+                if (modal) modal.hide();
+            } else {
+                const modalEl = document.getElementById('uploadDialog');
+                const modal = bootstrap.Modal.getInstance(modalEl);
+                if (modal) modal.hide();
+                else $(modalEl).modal('hide');
+            }
+        }
+
+        // 从 sessionStorage 恢复中断的上传：提示用户重新选择文件，后端会按 fileId 续传
+        function resumeUpload() {
+            showUploadDialog();
+            // 自动触发文件选择
+            setTimeout(() => {
+                const fileInput = document.getElementById('fileInput');
+                const dirInput = document.getElementById('dirInput');
+                // 让用户选择文件：同时支持单文件和多文件选择
+                if (window._currentUpload?.total === 1) {
+                    fileInput.click();
+                } else {
+                    dirInput.click();
+                }
+            }, 100);
+        }
+
+        // 页面加载时恢复之前中断的上传状态（从 sessionStorage）
+        (function restoreUploadState() {
+            const s = loadUploadState();
+            if (!s || !s.running || s.cancelled) return;
+            // 有进行中的上传：显示常驻条，等待用户重新选择文件继续
+            const u = window._currentUpload;
+            u.running = true;
+            u.done = s.done || 0;
+            u.failed = s.failed || 0;
+            u.total = s.total || 0;
+            u.cancelled = false;
+            u.taskChunks = s.taskChunks || [];
+            u.taskChunkTotal = s.taskChunkTotal || [];
+            uploadInitPrefix = s.prefix || '';
+            const bar = document.getElementById('persistentUploadBar');
+            if (bar) {
+                bar.classList.remove('d-none');
+                const resumeBtn = document.getElementById('barResumeBtn');
+                if (resumeBtn) resumeBtn.style.display = '';
+                const cancelBtn = document.getElementById('barCancelBtn');
+                if (cancelBtn) cancelBtn.style.display = '';
+            }
+        })();
 
         // 常驻条刷新（每 200ms 调用一次）
         function tickPersistentBar() {
@@ -1074,6 +1163,9 @@
 
             if (uploadBtn) uploadBtn.disabled = true;
 
+            // 持久化上传状态到 sessionStorage
+            saveUploadState();
+
             // 分片进度追踪：按分片权重计算真实进度，而非按任务数
             const taskChunks = new Array(total).fill(0);
             const taskChunkTotal = [];
@@ -1193,6 +1285,7 @@
 
             // 标记上传结束，收起常驻条，更新全局状态
             window._currentUpload.running = false;
+            clearUploadState();
             const resultEl = document.getElementById('uploadResultArea');
             if (resultEl) resultEl.classList.remove('d-none');
 
