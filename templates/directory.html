@@ -617,16 +617,20 @@
             const u = window._currentUpload;
             const bar = document.getElementById('persistentUploadBar');
             const summary = document.getElementById('uploadSummary');
+            
             // 确保 Bootstrap 遮罩完全移除
             const backdrop = document.querySelector('.modal-backdrop');
             if (backdrop) backdrop.remove();
+            
             if (u && u.running) {
-                summary.classList.add('d-none');
-                bar.classList.remove('d-none');
+                // 上传进行中：显示常驻条
+                if (summary) summary.classList.add('d-none');
+                if (bar) bar.classList.remove('d-none');
                 const cancelBtn = document.getElementById('barCancelBtn');
                 if (cancelBtn) cancelBtn.style.display = '';
             } else {
-                bar.classList.add('d-none');
+                // 上传已结束：收起常驻条
+                if (bar) bar.classList.add('d-none');
                 if (u && !u.cancelled) showUploadResult();
             }
         });
@@ -664,24 +668,24 @@
         // 从 sessionStorage 恢复中断的上传：提示用户重新选择文件，后端会按 fileId 续传
         function resumeUpload() {
             showUploadDialog();
-            // 自动触发文件选择
+            // 自动触发文件选择：单文件用 fileInput，多文件/文件夹用 dirInput
             setTimeout(() => {
                 const fileInput = document.getElementById('fileInput');
-                const dirInput = document.getElementById('dirInput');
-                // 让用户选择文件：同时支持单文件和多文件选择
-                if (window._currentUpload?.total === 1) {
+                if (fileInput && window._currentUpload?.total === 1) {
                     fileInput.click();
                 } else {
-                    dirInput.click();
+                    const dirInput = document.getElementById('dirInput');
+                    if (dirInput) dirInput.click();
                 }
-            }, 100);
+            }, 300);
         }
 
         // 页面加载时恢复之前中断的上传状态（从 sessionStorage）
         (function restoreUploadState() {
             const s = loadUploadState();
             if (!s || !s.running || s.cancelled) return;
-            // 有进行中的上传：显示常驻条，等待用户重新选择文件继续
+            
+            // 恢复状态到全局变量
             const u = window._currentUpload;
             u.running = true;
             u.done = s.done || 0;
@@ -691,14 +695,21 @@
             u.taskChunks = s.taskChunks || [];
             u.taskChunkTotal = s.taskChunkTotal || [];
             uploadInitPrefix = s.prefix || '';
+            
+            // 显示常驻条
             const bar = document.getElementById('persistentUploadBar');
             if (bar) {
                 bar.classList.remove('d-none');
-                const resumeBtn = document.getElementById('barResumeBtn');
-                if (resumeBtn) resumeBtn.style.display = '';
-                const cancelBtn = document.getElementById('barCancelBtn');
-                if (cancelBtn) cancelBtn.style.display = '';
+                tickPersistentBar(); // 立即更新显示
             }
+            
+            // 显示恢复按钮
+            const resumeBtn = document.getElementById('barResumeBtn');
+            if (resumeBtn) resumeBtn.style.display = '';
+            
+            // 显示取消按钮
+            const cancelBtn = document.getElementById('barCancelBtn');
+            if (cancelBtn) cancelBtn.style.display = '';
         })();
 
         // 常驻条刷新（每 200ms 调用一次）
@@ -1163,9 +1174,6 @@
 
             if (uploadBtn) uploadBtn.disabled = true;
 
-            // 持久化上传状态到 sessionStorage
-            saveUploadState();
-
             // 分片进度追踪：按分片权重计算真实进度，而非按任务数
             const taskChunks = new Array(total).fill(0);
             const taskChunkTotal = [];
@@ -1180,6 +1188,9 @@
 
             // 更新全局状态，供常驻条和 modal 共享
             window._currentUpload = { running: true, done: 0, failed: 0, total, cancelled: false, taskChunks, taskChunkTotal };
+            
+            // 立即保存状态到 sessionStorage（用于刷新恢复）
+            saveUploadState();
 
             // 断点续传预检：并发查询所有文件已上传分片数，让进度条一开始就有真实数字
             const prechecks = uploadTasks.map((t, i) => {
