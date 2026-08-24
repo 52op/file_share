@@ -317,26 +317,9 @@
                                             <img src="{% if logo_image_url.startswith('http') %}{{ logo_image_url }}{% else %}{{ url_for('static', filename=logo_image_url) }}{% endif %}"
                                                  alt="Logo预览" height="30" class="border rounded">
                                         {% endif %}
-                            </div>
-                            <!-- 性能设置 -->
-                            <div class="tab-pane fade" id="perf-settings" role="tabpanel">
-                                <div class="mb-3">
-                                    <label class="form-label">上传并发数</label>
-                                    <input type="number" class="form-control" name="upload_concurrency"
-                                           min="1" max="20" value="{{ upload_concurrency }}">
-                                    <small class="text-muted">同时上传的文件数，内网高速链路可调大（5-10）</small>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">分片大小 (MB)</label>
-                                    <input type="number" class="form-control" name="upload_chunk_size"
-                                           min="0.25" max="16" step="0.25"
-                                           value="{{ upload_chunk_size // 1048576 }}">
-                                    <small class="text-muted">每个分片的大小（MB），内网可调大（1-4）减少请求次数</small>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                            </div>
-
                             <!-- 安全设置 -->
                             <div class="tab-pane fade" id="security-settings" role="tabpanel">
                                 <div class="mb-3">
