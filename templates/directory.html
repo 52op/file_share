@@ -669,19 +669,29 @@
             }
         }
 
-        // 从 sessionStorage 恢复中断的上传：提示用户重新选择文件，后端会按 fileId 续传
+        // 从 sessionStorage 恢复中断的上传：提示用户重新选择文件以续传
         function resumeUpload() {
             showUploadDialog();
-            // 自动触发文件选择：单文件用 fileInput，多文件/文件夹用 dirInput
-            setTimeout(() => {
-                const fileInput = document.getElementById('fileInput');
-                if (fileInput && window._currentUpload?.total === 1) {
-                    fileInput.click();
-                } else {
-                    const dirInput = document.getElementById('dirInput');
-                    if (dirInput) dirInput.click();
+            // 存储待续传的文件信息到 sessionStorage，供文件选择后匹配
+            const u = window._currentUpload;
+            const pendingFiles = [];
+            (u.taskChunks || []).forEach((_, i) => {
+                if (uploadTasks[i]) {
+                    pendingFiles.push({
+                        name: uploadTasks[i].relPath,
+                        size: uploadTasks[i].file?.size || 0,
+                        lastModified: uploadTasks[i].file?.lastModified || 0
+                    });
                 }
-            }, 300);
+            });
+            sessionStorage.setItem('fs_pending_upload', JSON.stringify(pendingFiles));
+            
+            // 提示用户重新选择文件
+            setTimeout(() => {
+                alert('检测到之前的上传任务，请重新选择相同的文件以继续上传（系统将自动续传已完成的分片）');
+                const fileInput = document.getElementById('fileInput');
+                if (fileInput) fileInput.click();
+            }, 500);
         }
 
         // 页面加载时恢复之前中断的上传状态（从 sessionStorage）
@@ -879,6 +889,38 @@
         function openUploadWithTasks(tasks) {
             showUploadDialog();
             uploadTasks = tasks.slice();
+            
+            // 检查是否有待续传的文件（从 sessionStorage 恢复）
+            const pendingKey = 'fs_pending_upload';
+            const pendingRaw = sessionStorage.getItem(pendingKey);
+            if (pendingRaw) {
+                try {
+                    const pendingFiles = JSON.parse(pendingRaw);
+                    if (pendingFiles.length > 0) {
+                        // 尝试匹配已选择的新文件与待续传的文件
+                        const matchedChunks = new Array(uploadTasks.length).fill(0);
+                        let matched = false;
+                        uploadTasks.forEach((task, i) => {
+                            if (task.isDir || !task.file) return;
+                            const pending = pendingFiles.find(p => 
+                                p.name === task.relPath && 
+                                p.size === task.file.size &&
+                                Math.abs(p.lastModified - task.file.lastModified) < 1000
+                            );
+                            if (pending) {
+                                matched = true;
+                                // 标记为待续传，实际分片数会在 startUpload 时查询
+                                matchedChunks[i] = -1; // -1 表示需要查询
+                            }
+                        });
+                        if (matched) {
+                            window._currentUpload.willResume = true;
+                            window._currentUpload.pendingFiles = pendingFiles;
+                        }
+                    }
+                } catch (_) {}
+            }
+            
             renderSummary();
             renderTaskDetail();
         }
@@ -1156,6 +1198,19 @@
 
             // 先获取后端会话前缀，用于生成安全的 file_id
             await fetchUploadPrefix();
+            
+            // 清除待续传标记
+            sessionStorage.removeItem('fs_pending_upload');
+            window._currentUpload.willResume = false;
+
+            // 如果是续传，显示提示
+            if (window._currentUpload?.willResume) {
+                // 预检阶段已经开始，这里只需要在状态栏显示提示
+                const summary = document.getElementById('summaryStatus');
+                if (summary) {
+                    summary.textContent = '正在查询已上传分片，准备续传...';
+                }
+            }
 
             // 超大文件预检：单个 >200MB 时弹出确认提示
             const bigFiles = uploadTasks.filter(t => t.file && t.file.size > 200 * 1024 * 1024);
