@@ -586,6 +586,10 @@
         window._currentUpload = { running: false, done: 0, failed: 0, total: 0, cancelled: false };
         window._uploadConcurrency = {{ upload_concurrency }};
         window._uploadChunkSize   = {{ upload_chunk_size }};
+        // 提前声明，避免 IIFE 中的 TDZ 错误
+        let uploadInitPrefix = '';
+        let _speedBytes = 0;
+        let _speedStart = 0;
 
         // 序列化/反序列化上传状态到 sessionStorage，刷新后可恢复
         function saveUploadState() {
@@ -959,8 +963,6 @@
         }
 
         // 全局上传速率统计（用于进度条右侧实时显示）
-        let _speedBytes = 0;
-        let _speedStart = 0;
         function recordUploadByte(n) {
             _speedBytes += n || 0;
             if (!_speedStart) _speedStart = performance.now();
@@ -1007,8 +1009,6 @@
         const UPLOAD_MAX_RETRIES = 3;
         // 分片上传地址
         const uploadUrl = '/api/upload/{{ dir_obj.alias }}';
-        // 后端会话标识前缀，用于拼接安全 file_id，防止跨用户并发污染
-        let uploadInitPrefix = '';
         // 从配置读取的上传参数（可在 GUI/网页设置中调整）
         const MAX_CONCURRENT = {{ upload_concurrency }};
         const CHUNK_SIZE_DEFAULT = {{ upload_chunk_size }};
