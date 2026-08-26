@@ -83,6 +83,25 @@
             background: #eee;
         }
 
+        /* 上传任务暂停/继续按钮样式 */
+        .task-pause-btn {
+            background: none;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-size: 12px;
+            cursor: pointer;
+            margin-left: 4px;
+            line-height: 1.5;
+        }
+        .task-pause-btn:hover {
+            background: #f8f9fa;
+        }
+        .task-pause-btn.paused {
+            border-color: #0d6efd;
+            color: #0d6efd;
+        }
+
         /* 页面级拖拽上传提示遮罩 */
         body.page-dragging::after {
             content: '松开以上传文件或文件夹';
@@ -818,6 +837,7 @@
             u.cancelled = true;
             u.running = false;
             u.willResume = false;
+            u.paused = new Set();
 
             // 隐藏常驻条
             const bar = document.getElementById('persistentUploadBar');
@@ -1369,9 +1389,11 @@
                 const icon = task.isDir ? '📁' : '📄';
                 const name = task.isDir ? `${task.relPath}/` : task.relPath;
                 const size = task.isDir ? '' : ` (${formatFileSize(task.file.size)})`;
+                // 只为文件任务添加暂停/继续按钮
+                const pauseBtn = !task.isDir ? `<button class="task-pause-btn" data-task="${idx}" onclick="togglePause(${idx})" title="暂停/继续">▶</button>` : '';
                 item.innerHTML = `
                     <span class="text-truncate me-2" style="max-width: 70%" title="${name}">${icon} ${name}${size}</span>
-                    <span class="small text-muted flex-shrink-0" id="uploadTaskState_${idx}">等待中</span>`;
+                    <span class="small text-muted flex-shrink-0" id="uploadTaskState_${idx}">等待中</span>${pauseBtn}`;
                 taskDetail.appendChild(item);
             });
         }
@@ -1382,6 +1404,34 @@
             if (el) {
                 el.textContent = state;
                 el.className = `small flex-shrink-0 ${cls || 'text-muted'}`;
+            }
+        }
+
+        // 暂停/继续单个任务
+        function togglePause(idx) {
+            const u = window._currentUpload;
+            if (!u || !u.paused) u.paused = new Set();
+            const btn = document.querySelector(`.task-pause-btn[data-task="${idx}"]`);
+            if (u.paused.has(idx)) {
+                // 恢复
+                u.paused.delete(idx);
+                if (btn) {
+                    btn.textContent = '⏸';
+                    btn.classList.remove('paused');
+                    btn.title = '暂停';
+                }
+                setTaskState(idx, '恢复中...', 'text-primary');
+                // 恢复后启动任务
+                launchNext();
+            } else {
+                // 暂停
+                u.paused.add(idx);
+                if (btn) {
+                    btn.textContent = '▶';
+                    btn.classList.add('paused');
+                    btn.title = '继续';
+                }
+                setTaskState(idx, '已暂停', 'text-warning');
             }
         }
 
@@ -1657,7 +1707,7 @@
             });
 
             // 更新全局状态，供常驻条和 modal 共享（保留已有的 sessionId 等属性）
-            window._currentUpload = { ...window._currentUpload, running: true, done: 0, failed: 0, total, cancelled: false, taskChunks, taskChunkTotal };
+            window._currentUpload = { ...window._currentUpload, running: true, done: 0, failed: 0, total, cancelled: false, taskChunks, taskChunkTotal, paused: new Set() };
             
             // 立即保存状态到 sessionStorage（用于刷新恢复）
             saveUploadState();
@@ -1717,11 +1767,22 @@
                             if (uploaded >= chunks) uploaded = 0;
                             taskChunks[i] = uploaded;
 
-                            for (let chunk = uploaded; chunk < chunks; chunk++) {
+                            while (uploaded < chunks) {
+                                // 检查全局取消
                                 if (window._currentUpload?.cancelled) {
                                     taskResults[i] = { ok: false, index: i, cancelled: true };
                                     return;
                                 }
+                                // 检查自身暂停
+                                const u = window._currentUpload;
+                                if (u?.paused?.has(i)) {
+                                    setTaskState(i, '已暂停', 'text-warning');
+                                    // 等待暂停状态变化（每 200ms 检查一次）
+                                    await new Promise(r => setTimeout(r, 200));
+                                    continue;
+                                }
+
+                                const chunk = uploaded;
                                 updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${chunk + 1}/${chunks}）`, taskChunks, taskChunkTotal);
                                 const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
                                 uploaded = Math.max(realUploaded, chunk + 1);
@@ -1759,7 +1820,10 @@
                 // 如果已取消，不再启动新任务
                 if (window._currentUpload?.cancelled) return;
                 for (let i = 0; i < total; i++) {
-                    if (taskResults[i] === null && running < MAX_CONCURRENT) {
+                    // 跳过已完成、失败、暂停的任务
+                    if (taskResults[i] !== null) continue;
+                    if (window._currentUpload?.paused?.has(i)) continue;
+                    if (running < MAX_CONCURRENT) {
                         running++;
                         processTask(i).catch(e => console.error(e));
                     }
