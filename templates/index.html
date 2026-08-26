@@ -497,7 +497,7 @@
                     body: formData
                 });
                 if (!response.ok) throw new Error('Failed to update settings');
-                location.reload();
+                return response;
             },
 
             async updatePageSettings(data) {
