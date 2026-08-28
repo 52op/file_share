@@ -156,20 +156,19 @@
 
         <!-- 常驻上传进度条（关闭 modal 后接管展示，点击可恢复上传窗口） -->
         <div id="persistentUploadBar" class="d-none mb-3"
-             style="background:#f0f6ff;border:1px solid #b3d4fc;border-radius:6px;padding:10px 12px;">
+             style="min-height:49px;background:#f0f6ff;border:1px solid #b3d4fc;border-radius:6px;padding:10px 12px;visibility:hidden;opacity:0;transition:opacity .18s ease;">
             <div class="d-flex align-items-center gap-2 mb-1">
-                <span id="barIcon">📎</span>
+                <span id="barIcon"><i class="bi bi-paperclip"></i></span>
                 <span id="barTitle" class="fw-semibold small">上传中</span>
                 <span id="barFileCount" class="text-muted small"></span>
-                <div id="barProgressWrap" class="progress flex-grow-1" style="height:6px;margin:0">
+                <div id="barProgressWrap" class="progress flex-grow-1"                         style="height:6px;margin:0">
                     <div id="barProgress" class="progress-bar bg-primary" role="progressbar"
-                         style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                         style="width:0%;transform-origin:left center;transform:scaleX(0);transition:transform .16s linear" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
                 <span id="barSpeed" class="small text-muted" style="min-width:72px;text-align:right"></span>
                 <button id="barResumeBtn" class="btn btn-sm btn-primary py-0 px-2"
-                        style="display:none;font-size:12px" onclick="event.stopPropagation();resumeUpload()" title="继续上传">继续上传</button>
-                <button id="barCancelBtn" class="btn btn-sm btn-outline-danger py-0 px-2"
-                        style="display:none;font-size:12px" onclick="event.stopPropagation();cancelUpload()" title="取消上传">✕</button>
+                        style="display:none;font-size:12px" onclick="event.stopPropagation();resumeUpload()" title="继续上传">继续上传</button>                    <button id="barCancelBtn" class="btn btn-sm btn-outline-danger py-0 px-2"
+                        style="display:none;font-size:12px" onclick="event.stopPropagation();cancelUpload()" title="取消上传"><i class="bi bi-x-lg"></i></button>
             </div>
             <!-- 文件列表 -->
             <div id="barFileList" class="mt-2" style="max-height:150px;overflow-y:auto;display:none;"></div>
@@ -537,7 +536,7 @@
                     <div id="uploadSummary" class="mt-3 d-none">
                         <div class="d-flex justify-content-between align-items-center mb-1">
                             <span id="summaryText" class="fw-semibold"></span>
-                            <button type="button" class="btn btn-sm btn-link d-none" id="toggleDetailBtn">查看明细 ▾</button>
+                            <button type="button" class="btn btn-sm btn-link d-none" id="toggleDetailBtn">查看明细 <i class="bi bi-chevron-down"></i></button>
                         </div>
                         <div class="progress mb-1" style="height:8px">
                             <div class="progress-bar" id="summaryProgress" role="progressbar" style="width: 0%"
@@ -623,7 +622,7 @@
     <div id="resumeHint" class="d-none" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
          background:white;border:2px solid #0d6efd;border-radius:12px;padding:24px 32px;z-index:10000;
          box-shadow:0 8px 32px rgba(0,0,0,0.2);text-align:center;max-width:420px;">
-        <div style="font-size:48px;margin-bottom:12px;">📂</div>
+        <div style="font-size:48px;margin-bottom:12px;color:#6c757d;"><i class="bi bi-folder2-open"></i></div>
         <div class="fw-bold mb-2">请选择与上次相同的文件</div>
         <div class="small text-muted" id="resumeHintDetail"></div>
         <button class="btn btn-sm btn-outline-secondary mt-3" onclick="hideResumeHint()">取消</button>
@@ -652,13 +651,90 @@
 
         // 上传全局状态：modal 关闭时常驻条接管展示
         const UPLOAD_STATE_KEY = 'fs_upload_state';
-        window._currentUpload = { running: false, done: 0, failed: 0, total: 0, cancelled: false };
+        window._currentUpload = {
+            running: false, done: 0, failed: 0, completed: 0, total: 0, cancelled: false,
+            paused: new Set(), taskChunks: [], taskChunkTotal: [], taskResults: [],
+            runningTasks: new Set(), cancelledTasks: new Set(), serverData: null,
+            runtime: null
+        };
         window._uploadConcurrency = {{ upload_concurrency }};
         window._uploadChunkSize   = {{ upload_chunk_size }};
         // 提前声明，避免 IIFE 中的 TDZ 错误
         let uploadInitPrefix = '';
+        const UPLOAD_CLIENT_KEY = 'fs_upload_client_id';
+        function getUploadClientId() {
+            let id = sessionStorage.getItem(UPLOAD_CLIENT_KEY);
+            if (!id) {
+                id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random()}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+                sessionStorage.setItem(UPLOAD_CLIENT_KEY, id);
+            }
+            return id;
+        }
         let _speedBytes = 0;
         let _speedStart = 0;
+        let _speedSampleBytes = 0;
+        let _speedSampleTime = 0;
+        let _lastDisplayedSpeed = '';
+        const _taskSpeedState = new Map();
+        const _taskByteSamples = new Map();
+        const SPEED_WINDOW_MS = 3000;
+        let _speedWindowTime = 0;
+        // 进度展示层节流：合并高频分片事件，避免布局和动画反复重绘
+        let _barFramePending = false;
+        let _barDisplayedPct = 0;
+        let _barShownAt = 0;
+        let _barHideTimer = null;
+        let _barPendingData = null;
+        function setPersistentBarVisible(visible) {
+            const bar = document.getElementById('persistentUploadBar');
+            if (!bar) return;
+            if (visible) {
+                if (_barHideTimer) { clearTimeout(_barHideTimer); _barHideTimer = null; }
+                bar.classList.remove('d-none');
+                bar.style.visibility = 'visible';
+                requestAnimationFrame(() => { bar.style.opacity = '1'; });
+                if (!_barShownAt) _barShownAt = performance.now();
+            } else {
+                const wait = Math.max(0, 350 - (performance.now() - _barShownAt));
+                _barHideTimer = setTimeout(() => {
+                    bar.style.opacity = '0';
+                    setTimeout(() => { bar.classList.add('d-none'); bar.style.visibility = 'hidden'; }, 180);
+                    _barShownAt = 0;
+                    _barHideTimer = null;
+                }, wait);
+            }
+        }
+        function schedulePersistentBarRender(data) {
+            _barPendingData = data;
+            if (_barFramePending) return;
+            _barFramePending = true;
+            requestAnimationFrame(() => {
+                _barFramePending = false;
+                const pending = _barPendingData;
+                _barPendingData = null;
+                if (pending) updatePersistentBarValues(pending);
+            });
+        }
+        function updatePersistentBarValues({pct, title, speed}) {
+            const nextPct = Math.max(_barDisplayedPct, Math.min(100, Number(pct) || 0));
+            const progress = document.getElementById('barProgress');
+            const titleEl = document.getElementById('barTitle');
+            const countEl = document.getElementById('barFileCount');
+            const speedEl = document.getElementById('barSpeed');
+            if (progress && nextPct !== _barDisplayedPct) {
+                _barDisplayedPct = nextPct;
+                progress.style.setProperty('--bar-progress', `${nextPct}%`);
+                progress.style.width = `${nextPct}%`;
+                progress.style.transform = `scaleX(${nextPct / 100})`;
+                progress.setAttribute('aria-valuenow', nextPct);
+            }
+            if (titleEl && title != null && titleEl.textContent !== title) titleEl.textContent = title;
+            if (countEl && countEl.textContent !== `(${Math.round(nextPct)}%)`) countEl.textContent = `(${Math.round(nextPct)}%)`;
+            if (speedEl && speed) {
+                _lastDisplayedSpeed = speed;
+                speedEl.textContent = speed;
+            }
+        }
 
         // ===== 离开警告 + 新窗口打开 =====
         let _pendingNavigation = null;
@@ -722,6 +798,11 @@
             if (!u?.running) return;
             e.preventDefault();
             e.returnValue = '';
+            // 离开/刷新前通知服务端本窗口的上传已停止，使恢复条能在新页面立即出现
+            const sid = u.sessionId || sessionStorage.getItem('fs_upload_session_id');
+            if (sid && navigator.sendBeacon) {
+                navigator.sendBeacon(`/api/upload/session/${encodeURIComponent(sid)}/deactivate?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`);
+            }
         });
 
         // F5/Ctrl+R 拦截说明：浏览器在 JS 之前就处理了刷新，
@@ -743,7 +824,7 @@
                 sessionStorage.setItem(UPLOAD_STATE_KEY, JSON.stringify({
                     running: u.running, done: u.done, failed: u.failed, total: u.total,
                     cancelled: u.cancelled, taskChunks: u.taskChunks, taskChunkTotal: u.taskChunkTotal,
-                    prefix: uploadInitPrefix, time: Date.now()
+                    prefix: uploadInitPrefix, sessionId: u.sessionId, time: Date.now()
                 }));
             } catch (_) {}
         }
@@ -774,7 +855,7 @@
                 // 上传进行中：显示常驻条（上传中模式）
                 if (summary) summary.classList.add('d-none');
                 if (bar) {
-                    bar.classList.remove('d-none');
+                    setPersistentBarVisible(true);
                     showUploadingBar();
                 }
                 const cancelBtn = document.getElementById('barCancelBtn');
@@ -782,9 +863,9 @@
                 if (u.sessionId) startPolling();
             } else if (u && u.willResume && !u.running) {
                 // 恢复模式：保持常驻条显示（显示恢复提示）
-                if (bar) bar.classList.remove('d-none');
+                if (bar) setPersistentBarVisible(true);
             } else {
-                if (bar) bar.classList.add('d-none');
+                if (bar) setPersistentBarVisible(false);
                 stopPolling();
                 if (u && !u.cancelled) showUploadResult();
             }
@@ -826,19 +907,47 @@
             const barProgress = document.getElementById('barProgress');
             const barTitle = document.getElementById('barTitle');
             const barFileCount = document.getElementById('barFileCount');
-            
             if (!bar || !u) return;
-            
+
             const taskChunks = u.taskChunks || [];
             const taskChunkTotal = u.taskChunkTotal || [];
             const totalExpected = taskChunkTotal.reduce((a, b) => a + b, 0);
             const totalDone = taskChunks.reduce((a, b) => a + b, 0);
             const pct = totalExpected > 0 ? Math.round((totalDone / totalExpected) * 100) : 0;
-            
-            if (barProgress) barProgress.style.width = `${pct}%`;
-            if (barProgress) barProgress.setAttribute('aria-valuenow', pct);
-            if (barTitle) barTitle.textContent = `上传中 ${u.done}/${u.total} 文件`;
-            if (barFileCount) barFileCount.textContent = `(${pct}%)`;
+            uploadTasks.forEach((task, index) => {
+                const row = document.getElementById(`uploadTaskRow_${index}`);
+                if (!row) return;
+                const taskTotal = Number(taskChunkTotal[index]) || 0;
+                const taskDone = Number(taskChunks[index]) || 0;
+                const progress = taskTotal ? Math.round(taskDone / taskTotal * 100) : 0;
+                const progressEl = row.querySelector('[data-task-progress]');
+                if (progressEl) progressEl.textContent = `${progress}%`;
+            });
+            schedulePersistentBarRender({
+                pct,
+                title: `上传中 ${u.done + u.failed}/${u.total}（成功 ${u.done} 失败 ${u.failed}）`
+            });
+        }
+
+        function getTaskPauseKey(idx) {
+            const task = uploadTasks[idx];
+            return task?.pauseKey || `task:${idx}`;
+        }
+
+        function findTaskIndexByFileId(fileId) {
+            return uploadTasks.findIndex(task => task.fileId === fileId || task.resumeInfo?.file_id === fileId);
+        }
+
+        function updateBarTaskButton(fileId) {
+            const idx = findTaskIndexByFileId(fileId);
+            const key = idx >= 0 ? getTaskPauseKey(idx) : fileId;
+            const paused = window._currentUpload?.paused?.has(key);
+            document.querySelectorAll('.task-pause-btn[data-file-id]').forEach(btn => {
+                if (btn.dataset.fileId !== fileId) return;
+                btn.textContent = paused ? '继续' : '暂停';
+                btn.classList.toggle('paused', paused);
+                btn.title = paused ? '继续' : '暂停';
+            });
         }
 
         // 取消上传（同步执行，避免 inline onclick 异步问题）
@@ -854,7 +963,7 @@
 
             // 隐藏常驻条
             const bar = document.getElementById('persistentUploadBar');
-            if (bar) bar.classList.add('d-none');
+            if (bar) setPersistentBarVisible(false);
 
             stopPolling();
             showUploadResult();
@@ -863,7 +972,7 @@
             const sid = u.sessionId || sessionStorage.getItem('fs_upload_session_id');
             if (sid) {
                 try {
-                    await fetch(`/api/upload/session/${sid}/cancel`, {
+                    await fetch(`/api/upload/session/${sid}/cancel?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, {
                         method: 'POST',
                         credentials: 'same-origin',
                         headers: { 'Content-Type': 'application/json' },
@@ -908,25 +1017,71 @@
             const detail = document.getElementById('resumeHintDetail');
             if (hint) hint.classList.remove('d-none');
             if (detail) {
-                const names = meta.files.map(f => f.name).join('、');
+                const names = meta.files.map(f => f.name || (f.rel_path || '').split('/').pop()).join('、');
                 detail.textContent = `需要选择 ${meta.files.length} 个文件：${names}`;
+            }
+        }
+
+        // 低频 watcher：本窗口检测到上传正由其他窗口进行时，周期性复查，等其结束/失效后再显示恢复条
+        let _sessionWatcherTimer = null;
+        let _sessionRecheckTimer = null;
+        function startSessionWatcher() {
+            if (_sessionWatcherTimer) return;
+            _sessionWatcherTimer = setInterval(() => { restoreUploadStateFromServer(); }, 30000);
+            // 窗口刚刷新/关闭时，deactivate beacon 可能尚未被服务端处理，快速重查几次消除竞态
+            let n = 0;
+            const delays = [2500, 6000, 12000];
+            const schedule = () => {
+                if (n >= delays.length) return;
+                _sessionRecheckTimer = setTimeout(() => {
+                    restoreUploadStateFromServer();
+                    n++;
+                    schedule();
+                }, delays[n]);
+            };
+            schedule();
+        }
+        function stopSessionWatcher() {
+            if (_sessionWatcherTimer) {
+                clearInterval(_sessionWatcherTimer);
+                _sessionWatcherTimer = null;
+            }
+            if (_sessionRecheckTimer) {
+                clearTimeout(_sessionRecheckTimer);
+                _sessionRecheckTimer = null;
             }
         }
 
         // 从服务端恢复中断的上传状态（通过 init 接口发现所有活跃 session）
         async function restoreUploadStateFromServer() {
+            const alias = '{{ dir_obj.alias }}';
+            // 本窗口已在实际上传中，不参与恢复判断
+            if (window._currentUpload?.running) return false;
             try {
-                const resp = await fetch('/api/upload/init');
+                const resp = await fetch(`/api/upload/init?alias=${encodeURIComponent(alias)}&client_id=${encodeURIComponent(getUploadClientId())}`, { credentials: 'same-origin' });
                 if (!resp.ok) return false;
                 const data = await resp.json();
                 const sessions = data.sessions || [];
 
                 // 找未完成的 session
-                const active = sessions.filter(s => s.completed_files < s.total_files);
-                if (active.length === 0) return false;
+                const incomplete = sessions.filter(s => s.completed_files < s.total_files);
+                if (incomplete.length === 0) {
+                    stopSessionWatcher();
+                    return false;
+                }
 
-                const sess = active[active.length - 1];
-                const alias = '{{ dir_obj.alias }}';
+                // 恢复条已在显示（本窗口待续传），交给 1s 轮询处理即可
+                if (window._currentUpload?.willResume) return true;
+
+                // 上传正由其他窗口活跃进行：本窗口不显示恢复条，启动低频 watcher 等其结束/失效
+                const inactive = incomplete.filter(s => !s.active);
+                if (inactive.length === 0) {
+                    startSessionWatcher();
+                    return false;
+                }
+
+                stopSessionWatcher();
+                const sess = inactive[inactive.length - 1];
 
                 // 保存文件元数据到 localStorage（供后续匹配用）
                 const incompleteFiles = sess.files.filter(f => f.status !== 'completed');
@@ -936,9 +1091,12 @@
                         alias: alias,
                         files: incompleteFiles.map(f => ({
                             name: (f.rel_path || '').split('/').pop().split('\\').pop(),
+                            rel_path: f.rel_path,
                             size: f.size,
+                            last_modified: f.last_modified || 0,
                             total_chunks: f.total_chunks,
-                            uploaded_chunks: f.uploaded_chunks
+                            uploaded_chunks: f.uploaded_chunks,
+                            file_id: f.file_id
                         })),
                         timestamp: Date.now()
                     };
@@ -950,8 +1108,12 @@
                     running: false,
                     done: sess.completed_files || 0,
                     failed: 0,
+                    completed: sess.completed_files || 0,
                     total: sess.total_files,
                     cancelled: false,
+                    paused: new Set(),
+                    cancelledTasks: new Set(),
+                    runtime: null,
                     taskChunks: sess.files.map(f => f.uploaded_chunks || 0),
                     taskChunkTotal: sess.files.map(f => f.total_chunks || 1),
                     sessionId: sess.session_id,
@@ -960,7 +1122,9 @@
                 };
 
                 // 显示恢复模式的常驻条
+                stopSessionWatcher();
                 showResumeBar(sess);
+                startPolling();
                 return true;
             } catch (_) {
                 return false;
@@ -980,14 +1144,14 @@
             const barFileList = document.getElementById('barFileList');
 
             if (!bar) return;
-            bar.classList.remove('d-none');
+            setPersistentBarVisible(true);
 
             const incomplete = (sess.total_files || 0) - (sess.completed_files || 0);
 
             // 恢复模式：显示待续传文件列表、继续上传和取消按钮
-            if (barProgressWrap) barProgressWrap.style.display = 'none';
-            if (barSpeed) barSpeed.style.display = 'none';
-            if (barIcon) barIcon.textContent = '📎';
+            if (barProgressWrap) barProgressWrap.style.visibility = 'hidden';
+            if (barSpeed) barSpeed.style.visibility = 'hidden';
+            if (barIcon) barIcon.innerHTML = '<i class="bi bi-paperclip"></i>';
             bar.style.cursor = 'pointer';
 
             if (barTitle) barTitle.textContent = '检测到未完成的上传';
@@ -998,16 +1162,22 @@
                 const pending = sess.files.filter(f => f.status !== 'completed');
                 if (pending.length > 0) {
                     barFileList.style.display = 'block';
-                    barFileList.innerHTML = pending.map((f, idx) => `
-                        <div class="d-flex justify-content-between align-items-center py-1 small">
-                            <span class="text-truncate me-2" style="max-width:60%" title="${f.rel_path}">
-                                📄 ${f.rel_path}
+                    barFileList.innerHTML = pending.map((f) => {
+                        const fileId = f.file_id;
+                        const idx = findTaskIndexByFileId(fileId);
+                        const paused = idx >= 0
+                            ? window._currentUpload?.paused?.has(getTaskPauseKey(idx))
+                            : window._currentUpload?.paused?.has(fileId);
+                        return `
+                        <div class="d-flex align-items-center gap-2 py-1 small" data-file-row data-file-id="${fileId}">
+                            <span class="text-truncate flex-grow-1 align-middle" data-file-name title="${f.rel_path}"><i class="bi bi-file-earmark me-1"></i>${f.rel_path}</span>
+                            <span class="text-muted" data-file-progress style="min-width:80px;text-align:right">${Number(f.progress || 0).toFixed(0)}%</span>
+                            <span class="d-flex gap-1 flex-shrink-0">
+                                <button class="task-pause-btn" data-file-id="${fileId}" onclick="${idx >= 0 ? `toggleBarTaskPause('${fileId}')` : `resumeFromFile('${fileId}')`}" title="${idx >= 0 ? (paused ? '继续' : '暂停') : '选择该文件继续上传'}">${idx >= 0 ? (paused ? '继续' : '暂停') : '继续'}</button>
+                                <button class="task-cancel-btn" onclick="cancelBarFile('${fileId}')" title="取消">×</button>
                             </span>
-                            <span class="text-muted me-2" style="min-width:80px">${f.progress.toFixed(0)}%</span>
-                            <button class="task-pause-btn" onclick="resumeFromFile(${idx})" title="继续上传">继续</button>
-                            <button class="task-cancel-btn" onclick="cancelBarFile(${idx})" title="取消">×</button>
-                        </div>
-                    `).join('');
+                        </div>`;
+                    }).join('');
                 }
             }
 
@@ -1022,58 +1192,90 @@
             const barIcon = document.getElementById('barIcon');
             const resumeBtn = document.getElementById('barResumeBtn');
             const cancelBtn = document.getElementById('barCancelBtn');
-            if (barProgressWrap) barProgressWrap.style.display = '';
-            if (barSpeed) barSpeed.style.display = '';
-            if (barIcon) barIcon.textContent = '⏳';
+            const bar = document.getElementById('persistentUploadBar');
+            if (bar) {
+                setPersistentBarVisible(true);
+                bar.style.cursor = 'pointer';
+            }
+            if (barProgressWrap) barProgressWrap.style.visibility = 'visible';
+            if (barSpeed) barSpeed.style.visibility = 'visible';
+            if (barIcon) barIcon.innerHTML = '<i class="bi bi-hourglass-split"></i>';
             if (resumeBtn) resumeBtn.style.display = 'none';
             if (cancelBtn) cancelBtn.style.display = '';
+        }
+
+        // 恢复任务开始上传后，必须显式切换常驻条；刷新后没有 modal 的 hidden 事件可触发。
+        function activateUploadingBar() {
+            const u = window._currentUpload;
+            if (!u) return;
+            u.willResume = false;
+            showUploadingBar();
+            updatePersistentBarFromLocal();
+            startPolling();
         }
         
         // 从服务端数据更新常驻条显示（上传中模式）
         function updatePersistentBarFromServer(data) {
             const bar = document.getElementById('persistentUploadBar');
-            const barProgress = document.getElementById('barProgress');
-            const barTitle = document.getElementById('barTitle');
-            const barFileCount = document.getElementById('barFileCount');
             const barFileList = document.getElementById('barFileList');
-            const barSpeed = document.getElementById('barSpeed');
             
             if (!bar) return;
 
-            // 切换到上传中模式（显示进度条、速度、取消按钮）
-            showUploadingBar();
+            // 轮询只更新数据，不切换展示模式，避免暂停状态下反复闪烁。
+            const u = window._currentUpload;
+            if (!u?.running) return;
             
             // 更新进度
-            if (barProgress) barProgress.style.width = `${data.progress || 0}%`;
-            if (barProgress) barProgress.setAttribute('aria-valuenow', data.progress || 0);
+            const taskSpeeds = Array.from(_taskSpeedState.values())
+                .map(state => Number(state.bytesPerSecond) || 0)
+                .filter(speed => speed > 0);
+            const speed = taskSpeeds.length
+                ? formatSpeed(taskSpeeds.reduce((sum, value) => sum + value, 0))
+                : _lastDisplayedSpeed;
+            schedulePersistentBarRender({
+                pct: data.progress || 0,
+                title: `上传中 ${u.done + u.failed}/${u.total}（成功 ${u.done} 失败 ${u.failed}）`,
+                speed
+            });
             
-            // 更新标题
-            if (barTitle) barTitle.textContent = `上传中 ${data.completed_files || 0}/${data.total_files} 文件`;
-            if (barFileCount) barFileCount.textContent = `(${Math.round(data.progress || 0)}%)`;
-
-            // 更新速度
-            if (barSpeed && _speedStart > 0) {
-                const elapsed = (performance.now() - _speedStart) / 1000;
-                if (elapsed > 0.5 && _speedBytes > 0) {
-                    barSpeed.textContent = formatSpeed(_speedBytes / elapsed);
-                }
-            }
+            // 速度已经与进度一起通过 requestAnimationFrame 更新。
             
             // 显示文件列表（带暂停/继续和取消按钮）
-            if (data.files && data.files.length > 0) {
-                if (barFileList) {
-                    barFileList.style.display = 'block';
-                    barFileList.innerHTML = data.files.map((f, idx) => `
-                        <div class="d-flex justify-content-between align-items-center py-1 small">
-                            <span class="text-truncate me-2" style="max-width:60%" title="${f.rel_path}">
-                                📄 ${f.rel_path}
-                            </span>
-                            <span class="text-muted me-2" style="min-width:80px">${f.progress.toFixed(1)}%</span>
-                            <button class="task-pause-btn" onclick="toggleBarTaskPause(${idx})" title="暂停/继续">暂停</button>
-                            <button class="task-cancel-btn" onclick="cancelBarFile(${idx})" title="取消">×</button>
-                        </div>
-                    `).join('');
-                }
+            if (data.files && data.files.length > 0 && barFileList) {
+                barFileList.style.display = 'block';
+                const incoming = new Set(data.files.map(f => f.file_id));
+                const existing = new Map(Array.from(barFileList.querySelectorAll('[data-file-row]')).map(row => [row.dataset.fileId, row]));
+                data.files.forEach((f) => {
+                    const fileId = f.file_id;
+                    const idx = findTaskIndexByFileId(fileId);
+                    const paused = idx >= 0
+                        ? window._currentUpload?.paused?.has(getTaskPauseKey(idx))
+                        : window._currentUpload?.paused?.has(fileId);
+                    let row = existing.get(fileId);
+                    if (!row) {
+                        row = document.createElement('div');
+                        row.className = 'd-flex align-items-center gap-2 py-1 small';
+                        row.dataset.fileRow = '';
+                        row.dataset.fileId = fileId;
+                        row.innerHTML = '<span data-file-name class="text-truncate flex-grow-1"></span><span data-file-progress class="text-muted flex-shrink-0" style="min-width:170px;text-align:right"></span><span class="d-flex gap-1 flex-shrink-0"><button class="task-pause-btn" data-file-id=""></button><button class="task-cancel-btn" data-file-id="">×</button></span>';
+                        barFileList.appendChild(row);
+                    }
+                    // 兼容 showResumeBar 与动态创建两种行结构；元素缺失时跳过，避免拖垮整轮更新。
+                    const nameEl = row.querySelector('[data-file-name]');
+                    if (nameEl) { nameEl.innerHTML = `<i class="bi bi-file-earmark me-1"></i>${f.rel_path}`; nameEl.title = f.rel_path; }
+                    const taskSpeed = _taskSpeedState.get(fileId)?.speed || '';
+                    const progressEl = row.querySelector('[data-file-progress]');
+                    if (progressEl) progressEl.textContent = `${Number(f.progress || 0).toFixed(1)}%${taskSpeed ? ` · ${taskSpeed}` : ''}`;
+                    const pauseBtn = row.querySelector('.task-pause-btn');
+                    pauseBtn.dataset.fileId = fileId;
+                    pauseBtn.textContent = idx >= 0 ? (paused ? '继续' : '暂停') : '继续';
+                    pauseBtn.title = idx >= 0 ? (paused ? '继续' : '暂停') : '选择该文件继续上传';
+                    pauseBtn.onclick = () => idx >= 0 ? toggleBarTaskPause(fileId) : resumeFromFile(fileId);
+                    const cancelBtn = row.querySelector('.task-cancel-btn');
+                    cancelBtn.dataset.fileId = fileId;
+                    cancelBtn.onclick = () => cancelBarFile(fileId);
+                });
+                existing.forEach((row, fileId) => { if (!incoming.has(fileId)) row.remove(); });
             }
         }
         
@@ -1084,8 +1286,7 @@
             _pollTimer = setInterval(async () => {
                 const u = window._currentUpload;
                 if (!u?.running || !u?.sessionId) return;
-                try {
-                    const resp = await fetch(`/api/upload/session/${u.sessionId}`, { credentials: 'same-origin' });
+                try {                                    const resp = await fetch(`/api/upload/session/${u.sessionId}?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, { credentials: 'same-origin' });
                     if (resp.ok) {
                         const data = await resp.json();
                         if (data.files && data.files.length > 0) {
@@ -1097,7 +1298,7 @@
                                 u.running = false;
                                 // 清理服务端 session
                                 if (u.sessionId) {
-                                    fetch(`/api/upload/session/${u.sessionId}/cancel`, {
+                                    fetch(`/api/upload/session/${u.sessionId}/cancel?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, {
                                         method: 'POST',
                                         credentials: 'same-origin',
                                         headers: { 'Content-Type': 'application/json' },
@@ -1109,7 +1310,9 @@
                             }
                         }
                     }
-                } catch (_) {}
+                } catch (err) {
+                    console.warn('轮询上传状态失败:', err);
+                }
             }, 1000);
         }
         function stopPolling() {
@@ -1123,25 +1326,26 @@
         function tickPersistentBar() {
             const u = window._currentUpload;
             const bar = document.getElementById('persistentUploadBar');
-            const barProgress = document.getElementById('barProgress');
-            const barTitle = document.getElementById('barTitle');
-            const barSpeed = document.getElementById('barSpeed');
             if (!bar || !u.running) return;
             const taskChunks = u.taskChunks || [];
             const taskChunkTotal = u.taskChunkTotal || [];
             const totalExpected = taskChunkTotal.reduce((a, b) => a + b, 0);
             const totalDone = taskChunks.reduce((a, b) => a + b, 0);
             const pct = totalExpected > 0 ? Math.round((totalDone / totalExpected) * 100) : 0;
-            if (barProgress) barProgress.style.width = `${pct}%`;
-            if (barProgress) barProgress.setAttribute('aria-valuenow', pct);
-            if (barTitle) barTitle.textContent = `上传中 ${u.done + u.failed}/${u.total}（成功 ${u.done} 失败 ${u.failed}）`;
-            if (barSpeed) barSpeed.textContent = formatSpeed(_speedBytes / Math.max(1, (performance.now() - _speedStart) / 1000));
+            schedulePersistentBarRender({
+                pct,
+                title: `上传中 ${u.done + u.failed}/${u.total}（成功 ${u.done} 失败 ${u.failed}）`,
+                speed: (() => {
+                    const values = Array.from(_taskSpeedState.values()).map(state => Number(state.bytesPerSecond) || 0).filter(Boolean);
+                    return values.length ? formatSpeed(values.reduce((sum, value) => sum + value, 0)) : _lastDisplayedSpeed;
+                })()
+            });
         }
 
         // 上传完成后的结果展示（常驻条收起，提示是否刷新）
         function showUploadResult() {
             const bar = document.getElementById('persistentUploadBar');
-            if (bar) bar.classList.add('d-none');
+            if (bar) setPersistentBarVisible(false);
         }
 
         // 递归遍历拖入的目录，收集 {file, relPath}。目录本身（含空目录）也会作为条目加入
@@ -1281,25 +1485,32 @@
         // 续传文件选择器：用户选择文件后，从服务端实时获取 session 数据进行匹配
         document.getElementById('resumeFileInput').addEventListener('change', async () => {
             // 必须在 hideResumeHint 清空 input.value 之前保存文件引用
-            const selectedFiles = Array.from(document.getElementById('resumeFileInput').files);
+            const resumeInput = document.getElementById('resumeFileInput');
+            const singleFileId = resumeInput.dataset.resumeSingle === '1' ? resumeInput.dataset.resumeFileId : '';
+            resumeInput.dataset.resumeSingle = '';
+            resumeInput.dataset.resumeFileId = '';
+            const selectedFiles = Array.from(resumeInput.files);
             hideResumeHint();
             const alias = '{{ dir_obj.alias }}';
-
-            if (selectedFiles.length === 0) return;
 
             if (selectedFiles.length === 0) return;
 
             // 直接从服务端获取当前活跃 session（不依赖 localStorage）
             let serverFiles = [];
             try {
-                const resp = await fetch('/api/upload/init');
+                const resp = await fetch(`/api/upload/init?alias=${encodeURIComponent(alias)}&client_id=${encodeURIComponent(getUploadClientId())}`, { credentials: 'same-origin' });
                 if (resp.ok) {
                     const data = await resp.json();
                     const sessions = data.sessions || [];
                     const active = sessions.filter(s => s.completed_files < s.total_files);
                     if (active.length > 0) {
                         const sess = active[active.length - 1];
-                        serverFiles = (sess.files || []).filter(f => f.status !== 'completed');
+                        // 单文件恢复只匹配指定 file_id；同时保留相对路径，供子任务显示和进度更新使用。
+                        serverFiles = (sess.files || []).filter(f => f.status !== 'completed' && (!singleFileId || f.file_id === singleFileId));
+                        if (singleFileId && serverFiles.length === 0) {
+                            alert('找不到该文件的未完成上传状态，可能已完成或被取消。');
+                            return;
+                        }
                     }
                 }
             } catch (err) {
@@ -1316,15 +1527,26 @@
             // 匹配逻辑：从 rel_path 取文件名（只比文件名，不比 size，避免字节差异）
             const matched = [];
             const unmatched = [];
+            const usedServerFiles = new Set();
             for (const file of selectedFiles) {
-                const match = serverFiles.find(sf => {
-                    const serverName = (sf.rel_path || '').split('/').pop().split('\\').pop();
-                    return serverName === file.name;
-                });
+                const selectedPath = file.webkitRelativePath || file.name;
+                let match = serverFiles.find(sf =>
+                    !usedServerFiles.has(sf.file_id) && sf.rel_path === selectedPath &&
+                    Number(sf.size) === file.size && Number(sf.last_modified || 0) === Number(file.lastModified || 0)
+                );
+                if (!match) {
+                    const candidates = serverFiles.filter(sf =>
+                        !usedServerFiles.has(sf.file_id) &&
+                        (sf.rel_path || '').split('/').pop().split('\\').pop() === file.name &&
+                        Number(sf.size) === file.size && Number(sf.last_modified || 0) === Number(file.lastModified || 0)
+                    );
+                    if (candidates.length === 1) match = candidates[0];
+                }
                 if (match) {
-                    matched.push({ file, relPath: file.name, resumeInfo: match });
+                    usedServerFiles.add(match.file_id);
+                    matched.push({ file, relPath: match.rel_path, resumeInfo: match });
                 } else {
-                    unmatched.push({ file, relPath: file.name });
+                    unmatched.push({ file, relPath: selectedPath });
                 }
             }
 
@@ -1341,6 +1563,7 @@
             // 构建 uploadTasks，携带 resumeInfo
             const tasks = matched.map(m => ({
                 file: m.file,
+                fileId: m.resumeInfo.file_id,
                 relPath: m.relPath,
                 resumeInfo: m.resumeInfo
             })).concat(unmatched.map(u => ({
@@ -1352,6 +1575,7 @@
             // 构建新任务列表
             const newTasks = matched.map(m => ({
                 file: m.file,
+                fileId: m.resumeInfo.file_id,
                 relPath: m.relPath,
                 resumeInfo: m.resumeInfo
             })).concat(unmatched.map(u => ({
@@ -1365,14 +1589,12 @@
                 (unmatched.length > 0 ? `，${unmatched.length} 个文件将作为新文件上传` : '');
             alert(msg);
 
-            // 设置续传标记
+            // 设置续传标记；真正开始 startUpload 后会切换常驻条到上传中模式。
             window._currentUpload.willResume = true;
 
             // 如果已有任务在运行，追加到新任务而不是替换
             if (window._currentUpload?.running && uploadTasks.length > 0) {
-                uploadTasks.push(...newTasks);
-                renderSummary();
-                renderTaskDetail();
+                if (window._appendUploadTasks) await window._appendUploadTasks(newTasks);
             } else {
                 uploadTasks = newTasks;
                 await startUpload();
@@ -1386,6 +1608,14 @@
 
         // 打开上传对话框并填充文件/文件夹列表
         function openUploadWithTasks(tasks) {
+            if (!tasks?.length) return;
+            if (window._currentUpload?.running && window._appendUploadTasks) {
+                window._appendUploadTasks(tasks).catch(error => {
+                    console.error('追加上传任务失败:', error);
+                    alert('追加上传任务失败: ' + error.message);
+                });
+                return;
+            }
             showUploadDialog();
             uploadTasks = tasks.slice();
             renderSummary();
@@ -1408,10 +1638,10 @@
             toggleDetailBtn.classList.toggle('d-none', uploadTasks.length <= 8);
             if (uploadTasks.length <= 8) {
                 detailWrap.classList.remove('d-none');
-                toggleDetailBtn.textContent = '隐藏明细 ▴';
+                toggleDetailBtn.innerHTML = '隐藏明细 <i class="bi bi-chevron-up"></i>';
             } else {
                 detailWrap.classList.add('d-none');
-                toggleDetailBtn.textContent = '查看明细 ▾';
+                toggleDetailBtn.innerHTML = '查看明细 <i class="bi bi-chevron-down"></i>';
             }
         }
 
@@ -1422,28 +1652,52 @@
                 const item = document.createElement('div');
                 item.className = 'd-flex justify-content-between align-items-center py-1';
                 item.id = `uploadTaskRow_${idx}`;
-                const icon = task.isDir ? '📁' : '📄';
+                const icon = task.isDir
+                    ? '<i class="bi bi-folder me-1"></i>'
+                    : '<i class="bi bi-file-earmark me-1"></i>';
                 const name = task.isDir ? `${task.relPath}/` : task.relPath;
                 const size = task.isDir ? '' : ` (${formatFileSize(task.file.size)})`;
+                const u = window._currentUpload;
+                const runtime = u?.runtime;
+                const key = getTaskPauseKey(idx);
+                const paused = u?.paused?.has(key);
+                const result = runtime?.taskResults?.[idx];
+                const state = result?.cancelled ? '已取消'
+                    : result?.ok ? '<i class="bi bi-check-lg me-1"></i>完成'
+                    : result && !result.ok ? '<i class="bi bi-x-lg me-1"></i>失败'
+                    : paused ? '已暂停'
+                    : runtime?.runningTasks?.has(idx) ? '上传中' : '等待中';
+                const stateClass = result?.cancelled ? 'text-muted'
+                    : result?.ok ? 'text-success'
+                    : result && !result.ok ? 'text-danger'
+                    : paused ? 'text-warning'
+                    : runtime?.runningTasks?.has(idx) ? 'text-primary' : 'text-muted';
                 // 只为文件任务添加暂停/继续和取消按钮
+                const fileId = task.fileId || task.resumeInfo?.file_id || key;
                 const pauseBtn = !task.isDir
-                    ? `<button class="task-pause-btn" data-task="${idx}" onclick="togglePause(${idx})" title="暂停/继续">暂停</button>`
+                    ? `<button class="task-pause-btn" data-task="${idx}" data-file-id="${fileId}" onclick="togglePause(${idx})" title="${paused ? '继续' : '暂停'}">${paused ? '继续' : '暂停'}</button>`
                     : '';
                 const cancelBtn = !task.isDir
                     ? `<button class="task-cancel-btn" onclick="cancelTask(${idx})" title="取消任务">×</button>`
                     : '';
                 item.innerHTML = `
-                    <span class="text-truncate me-2" style="max-width: 70%" title="${name}">${icon} ${name}${size}</span>
-                    <span class="small text-muted flex-shrink-0" id="uploadTaskState_${idx}">等待中</span>${pauseBtn}${cancelBtn}`;
+                    <span class="text-truncate flex-grow-1 me-2" title="${name}">${icon} ${name}${size}</span>
+                    <span class="small flex-shrink-0 ${stateClass}" id="uploadTaskState_${idx}">${state}</span>
+                    <span class="small text-muted flex-shrink-0" data-task-progress>${(() => {
+                        const totalChunks = Number(u?.taskChunkTotal?.[idx]) || Number(task.resumeInfo?.total_chunks) || 0;
+                        const doneChunks = Number(u?.taskChunks?.[idx]) || Number(task.resumeInfo?.uploaded_chunks) || 0;
+                        return totalChunks > 0 ? `${Math.min(100, Math.round(doneChunks / totalChunks * 100))}%` : '';
+                    })()}</span>
+                    <span class="d-flex gap-1 flex-shrink-0">${pauseBtn}${cancelBtn}</span>`;
                 taskDetail.appendChild(item);
             });
         }
 
-        // 更新某个任务的状态文本
+        // 更新某个任务的状态文本（状态可含 <i> 图标，因此用 innerHTML）
         function setTaskState(idx, state, cls) {
             const el = document.getElementById(`uploadTaskState_${idx}`);
             if (el) {
-                el.textContent = state;
+                el.innerHTML = state;
                 el.className = `small flex-shrink-0 ${cls || 'text-muted'}`;
             }
         }
@@ -1451,103 +1705,96 @@
         // 暂停/继续单个任务
         function togglePause(idx) {
             const u = window._currentUpload;
-            if (!u || !u.paused) u.paused = new Set();
-            const btn = document.querySelector(`.task-pause-btn[data-task="${idx}"]`);
-            if (u.paused.has(idx)) {
-                // 恢复
-                u.paused.delete(idx);
-                if (btn) {
-                    btn.textContent = '暂停';
-                    btn.classList.remove('paused');
-                    btn.title = '暂停';
-                }
+            if (!u) return;
+            if (!u.paused) u.paused = new Set();
+            const key = getTaskPauseKey(idx);
+            if (u.paused.has(key)) {
+                u.paused.delete(key);
                 setTaskState(idx, '上传中', 'text-primary');
-                // 恢复后启动任务（可能有空闲槽位被新任务占用）
-                if (window._launchNext) window._launchNext();
             } else {
-                // 暂停
-                u.paused.add(idx);
-                if (btn) {
-                    btn.textContent = '继续';
-                    btn.classList.add('paused');
-                    btn.title = '继续';
-                }
+                u.paused.add(key);
                 setTaskState(idx, '已暂停', 'text-warning');
             }
-        }
-
-        // 取消单个任务
-        function cancelTask(idx) {
-            const u = window._currentUpload;
-            if (!u) return;
-            // 从暂停集合中移除
-            if (u.paused) u.paused.delete(idx);
-            // 标记为已完成（取消），让 launchNext 知道这个槽位可以释放
-            if (taskResults && taskResults[idx] !== undefined) {
-                taskResults[idx] = { ok: false, index: idx, cancelled: true };
-            }
-            // 更新 UI
-            setTaskState(idx, '已取消', 'text-muted');
-            const btn = document.querySelector(`.task-pause-btn[data-task="${idx}"]`);
-            if (btn) btn.style.display = 'none';
-            const cancelBtn = document.querySelector(`.task-cancel-btn[onclick="cancelTask(${idx})"]`);
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            // 减少计数并启动下一个
-            done++;
-            window._currentUpload.done = done;
-            updateSummary(done, window._currentUpload.total,
-                `已完成 ${done}/${window._currentUpload.total}`,
-                taskChunks, taskChunkTotal);
+            updateBarTaskButton(uploadTasks[idx]?.fileId || key);
+            if (window._resetUploadSpeed) window._resetUploadSpeed();
             if (window._launchNext) window._launchNext();
         }
 
-        // 常驻条：切换任务暂停/继续
-        function toggleBarTaskPause(idx) {
+        // 取消单个任务。运行中的任务由 processTask 在 finally 中统一结算，避免重复计数。
+        function cancelTask(idx) {
             const u = window._currentUpload;
-            if (!u || !u.paused) return;
-            if (u.paused.has(idx)) {
-                u.paused.delete(idx);
-                const barFileList = document.getElementById('barFileList');
-                if (barFileList) {
-                    const btns = barFileList.querySelectorAll('.task-pause-btn');
-                    if (btns[idx]) { btns[idx].textContent = '暂停'; btns[idx].classList.remove('paused'); }
-                }
-                if (window._launchNext) window._launchNext();
-            } else {
-                u.paused.add(idx);
-                const barFileList = document.getElementById('barFileList');
-                if (barFileList) {
-                    const btns = barFileList.querySelectorAll('.task-pause-btn');
-                    if (btns[idx]) { btns[idx].textContent = '继续'; btns[idx].classList.add('paused'); }
-                }
+            const runtime = u?.runtime;
+            if (!u || !runtime || idx < 0 || idx >= runtime.taskResults.length || runtime.taskResults[idx] !== null) return;
+            const key = getTaskPauseKey(idx);
+            u.paused?.delete(key);
+            u.cancelledTasks.add(idx);
+            setTaskState(idx, '已取消', 'text-muted');
+            if (u.sessionId && uploadTasks[idx]?.fileId) {
+                fetch(`/api/upload/session/${u.sessionId}/file/${encodeURIComponent(uploadTasks[idx].fileId)}/cancel?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, {
+                    method: 'POST', credentials: 'same-origin'
+                }).catch(() => {});
             }
+            const row = document.getElementById(`uploadTaskRow_${idx}`);
+            if (row) row.querySelectorAll('button').forEach(btn => { btn.disabled = true; });
+            if (!u.runningTasks.has(idx)) {
+                runtime.taskResults[idx] = { ok: false, index: idx, cancelled: true };
+                runtime.finished++;
+                u.completed = runtime.finished;
+            }
+            if (window._launchNext) window._launchNext();
         }
 
-        // 常驻条：取消单个任务
-        function cancelBarFile(idx) {
-            if (!confirm('确定要取消该任务的上传吗？')) return;
+        // 从常驻条恢复单个文件：只选择并续传指定文件。
+        function resumeFromFile(fileId) {
+            if (window._currentUpload?.running && findTaskIndexByFileId(fileId) >= 0) {
+                toggleBarTaskPause(fileId);
+                return;
+            }
+            const u = window._currentUpload;
+            const fileInfo = (u?.files || []).find(f => f.file_id === fileId)
+                || (u?.serverData?.files || []).find(f => f.file_id === fileId);
+            if (!fileInfo) return;
+            const input = document.getElementById('resumeFileInput');
+            if (!input) return;
+            input.dataset.resumeFileId = fileId;
+            input.dataset.resumeSingle = '1';
+            // 单文件恢复时优先使用服务端的完整相对路径/文件名，避免提示出现空文件名。
+            const displayName = fileInfo.rel_path || fileInfo.name || fileId;
+            showResumeHint({ files: [{ ...fileInfo, name: displayName }] });
+            input.click();
+        }
+
+        // 常驻条按钮按 file_id 操作，避免服务端文件顺序与前端任务顺序不一致。
+        function toggleBarTaskPause(fileId) {
             const u = window._currentUpload;
             if (!u) return;
-            // 如果是进行中任务，标记完成并释放槽位
-            if (u.running) {
-                if (taskResults && taskResults[idx] !== undefined) {
-                    taskResults[idx] = { ok: false, index: idx, cancelled: true };
-                }
-                done++;
-                u.done = done;
-                if (window._launchNext) window._launchNext();
+            const idx = findTaskIndexByFileId(fileId);
+            const key = idx >= 0 ? getTaskPauseKey(idx) : fileId;
+            if (!u.paused) u.paused = new Set();
+            if (u.paused.has(key)) u.paused.delete(key);
+            else u.paused.add(key);
+            if (idx >= 0) setTaskState(idx, u.paused.has(key) ? '已暂停' : '上传中', u.paused.has(key) ? 'text-warning' : 'text-primary');
+            updateBarTaskButton(fileId);
+            if (window._resetUploadSpeed) window._resetUploadSpeed();
+            if (window._launchNext) window._launchNext();
+        }
+
+        // 常驻条：取消单个任务，使用同一套任务结算逻辑。
+        function cancelBarFile(fileId) {
+            if (!confirm('确定要取消该任务的上传吗？')) return;
+            const idx = findTaskIndexByFileId(fileId);
+            if (idx >= 0) {
+                cancelTask(idx);
+                return;
             }
-            // 从列表中移除
-            const barFileList = document.getElementById('barFileList');
-            if (barFileList) {
-                const row = barFileList.children[idx];
+            const u = window._currentUpload;
+            if (!u || !u.sessionId) return;
+            fetch(`/api/upload/session/${u.sessionId}/file/${encodeURIComponent(fileId)}/cancel`, {
+                method: 'POST', credentials: 'same-origin'
+            }).then(() => {
+                const row = Array.from(document.querySelectorAll('#barFileList [data-file-row]')).find(el => el.dataset.fileId === fileId);
                 if (row) row.remove();
-            }
-            // 刷新计数
-            const remaining = barFileList ? barFileList.children.length : 0;
-            const barFileCount = document.getElementById('barFileCount');
-            if (barFileCount) barFileCount.textContent = `${remaining} 个待续传`;
-            if (remaining === 0 && barFileList) barFileList.style.display = 'none';
+            }).catch(() => {});
         }
 
         // 更新总进度条与状态行
@@ -1558,7 +1805,9 @@
             if (taskChunks && taskChunkTotal) {
                 const totalExpected = taskChunkTotal.reduce((a, b) => a + b, 0);
                 const totalDone = taskChunks.reduce((a, b) => a + b, 0);
-                pct = totalExpected > 0 ? Math.round((totalDone / totalExpected) * 100) : 0;
+                pct = totalExpected > 0
+                    ? Math.round((totalDone / totalExpected) * 100)
+                    : (total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0);
             } else {
                 pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
             }
@@ -1580,20 +1829,101 @@
             return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
         }
 
-        // 全局上传速率统计（用于进度条右侧实时显示）
+        // 全局上传速率统计：只计算最近一个采样窗口内实际完成的字节。
         function recordUploadByte(n) {
             _speedBytes += n || 0;
             if (!_speedStart) _speedStart = performance.now();
         }
+        // 按文件记录真实传输字节（XHR 实时进度与 fetch 兜底共用），供常驻条/模态框速率与 3s 窗口聚合使用。
+        function recordUploadBytes(fileId, n) {
+            if (!n || n <= 0) return;
+            recordUploadByte(n);
+            const sample = _taskByteSamples.get(fileId) || { bytes: 0 };
+            _taskByteSamples.set(fileId, { bytes: sample.bytes + n });
+            if (!_taskSpeedState.has(fileId)) {
+                _taskSpeedState.set(fileId, { speed: '', bytesPerSecond: 0, sampleBytes: 0, time: performance.now() });
+            }
+        }
+        function resetUploadSpeed() {
+            _speedSampleBytes = _speedBytes;
+            _speedSampleTime = performance.now();
+            _speedWindowTime = _speedSampleTime;
+            _taskByteSamples.clear();
+            _taskSpeedState.clear();
+            _speedBytes = 0;
+            const uploadSpeed = document.getElementById('uploadSpeed');
+            const barSpeed = document.getElementById('barSpeed');
+            if (uploadSpeed) uploadSpeed.textContent = _lastDisplayedSpeed || '计算中…';
+            if (barSpeed) barSpeed.textContent = _lastDisplayedSpeed || '计算中…';
+        }
+        window._resetUploadSpeed = resetUploadSpeed;
+        function hasActiveUploadTask() {
+            const u = window._currentUpload;
+            if (!u?.running || !u.runtime) return false;
+            return Array.from(u.runningTasks || []).some(idx => !u.paused?.has(getTaskPauseKey(idx)));
+        }
         function tickUploadSpeed() {
             const el = document.getElementById('uploadSpeed');
-            if (!el) return;
-            const elapsed = (performance.now() - _speedStart) / 1000;
-            if (elapsed < 0.5 || _speedBytes === 0) return;
-            const bps = _speedBytes / elapsed;
-            el.textContent = formatSpeed(bps);
+            const barSpeed = document.getElementById('barSpeed');
+            const u = window._currentUpload;
+            if (!el || !u?.running || !hasActiveUploadTask()) {
+                if (el && _lastDisplayedSpeed) el.textContent = _lastDisplayedSpeed;
+                if (barSpeed && _lastDisplayedSpeed && barSpeed.textContent !== _lastDisplayedSpeed) barSpeed.textContent = _lastDisplayedSpeed;
+                if (el && _lastDisplayedSpeed && el.textContent !== _lastDisplayedSpeed) el.textContent = _lastDisplayedSpeed;
+                return;
+            }
+            const now = performance.now();
+            const elapsed = (now - _speedSampleTime) / 1000;
+            if (elapsed <= 0) return;
+            const bytes = _speedBytes - _speedSampleBytes;
+            _speedSampleBytes = _speedBytes;
+            _speedSampleTime = now;
+            const speed = bytes > 0 ? formatSpeed(bytes / elapsed) : '';
+            if (speed) {
+                _lastDisplayedSpeed = speed;
+                if (el.textContent !== speed) el.textContent = speed;
+                if (barSpeed && barSpeed.textContent !== speed) barSpeed.textContent = speed;
+            }
         }
-        setInterval(tickUploadSpeed, 1000);
+        setInterval(() => {
+            tickUploadSpeed();
+            const now = performance.now();
+            const elapsed = Math.max(0.001, (now - _speedWindowTime) / 1000);
+            if (elapsed * 1000 < SPEED_WINDOW_MS) return;
+            if (!_speedWindowTime) { _speedWindowTime = now; return; }
+            let totalWindowBytes = 0;
+            _taskSpeedState.forEach((state, fileId) => {
+                const sample = _taskByteSamples.get(fileId);
+                if (!sample) return;
+                const previousBytes = state.sampleBytes || 0;
+                const delta = Math.max(0, sample.bytes - previousBytes);
+                state.sampleBytes = sample.bytes;
+                if (delta > 0) {
+                    const newRate = delta / elapsed;
+                    // 指数平滑：抑制分片完成瞬间的尖峰，尤其是 fetch 兜底路径
+                    state.bytesPerSecond = state.bytesPerSecond > 0 ? state.bytesPerSecond * 0.5 + newRate * 0.5 : newRate;
+                    state.speed = formatSpeed(state.bytesPerSecond) || state.speed;
+                    state.time = now;
+                }
+                totalWindowBytes += delta;
+            });
+            _speedWindowTime = now;
+            const activeSpeeds = Array.from(_taskSpeedState.values())
+                .map(state => Number(state.bytesPerSecond) || 0)
+                .filter(speed => speed > 0);
+            if (activeSpeeds.length) {
+                const displayTotal = activeSpeeds.reduce((sum, value) => sum + value, 0);
+                _lastDisplayedSpeed = formatSpeed(displayTotal) || _lastDisplayedSpeed;
+                const diagnosticTotal = totalWindowBytes / elapsed;
+                window._uploadSpeedDiagnostics = {
+                    windowMs: Math.round(elapsed * 1000),
+                    displayBytesPerSecond: displayTotal,
+                    actualBytesPerSecond: diagnosticTotal,
+                    taskCount: activeSpeeds.length,
+                    timestamp: Date.now()
+                };
+            }
+        }, 1000);
 
         // 对话框显示函数
         function showUploadDialog(isResume = false) {
@@ -1607,7 +1937,7 @@
             detailWrap.classList.add('d-none');
             // 非续传时收起常驻条
             const bar = document.getElementById('persistentUploadBar');
-            if (!isResume && bar) bar.classList.add('d-none');
+            if (!isResume && bar) setPersistentBarVisible(false);
             new bootstrap.Modal(document.getElementById('uploadDialog')).show();
         }
 
@@ -1619,7 +1949,7 @@
         // 查看/隐藏明细切换
         toggleDetailBtn.addEventListener('click', () => {
             const hidden = detailWrap.classList.toggle('d-none');
-            toggleDetailBtn.textContent = hidden ? '查看明细 ▾' : '隐藏明细 ▴';
+            toggleDetailBtn.innerHTML = hidden ? '查看明细 <i class="bi bi-chevron-down"></i>' : '隐藏明细 <i class="bi bi-chevron-up"></i>';
         });
 
         // 文件操作函数
@@ -1637,7 +1967,7 @@
         async function fetchUploadPrefix() {
             if (uploadInitPrefix && window._currentUpload?.sessionId) return uploadInitPrefix;
             try {
-                const resp = await fetch('/api/upload/init', { method: 'GET', credentials: 'same-origin' });
+                const resp = await fetch(`/api/upload/init?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, { method: 'GET', credentials: 'same-origin' });
                 if (resp.ok) {
                     const data = await resp.json();
                     uploadInitPrefix = data.prefix || '';
@@ -1666,7 +1996,7 @@
         // 查询服务器已收到多少分片（用于失败续传和真实进度）
         async function fetchUploadedChunks(fileId) {
             try {
-                const resp = await fetch(`/api/upload/status/${encodeURIComponent(fileId)}`, {
+                const resp = await fetch(`/api/upload/status/${encodeURIComponent(fileId)}?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, {
                     method: 'GET',
                     credentials: 'same-origin'
                 });
@@ -1678,6 +2008,36 @@
                 console.warn('查询上传进度失败，按未上传处理:', e);
             }
             return 0;
+        }
+
+        // 兼容式 XHR 请求：优先使用 XHR（支持旧浏览器和上传进度），fetch 作为兜底。
+        function uploadRequest(url, options) {
+            if (typeof XMLHttpRequest === 'undefined') return fetch(url, options);
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                let settled = false;
+                const finish = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+                xhr.open(options.method || 'GET', url, true);
+                xhr.withCredentials = options.credentials === 'include' || options.credentials === 'same-origin';
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                if (options.headers) Object.entries(options.headers).forEach(([key, value]) => xhr.setRequestHeader(key, value));
+                xhr.timeout = options.timeout || 0;
+                xhr.upload && (xhr.upload.onprogress = options.onUploadProgress || null);
+                xhr.onload = () => finish(resolve, {
+                    ok: xhr.status >= 200 && xhr.status < 300,
+                    status: xhr.status,
+                    text: () => Promise.resolve(xhr.responseText),
+                    json: () => Promise.resolve(JSON.parse(xhr.responseText || '{}'))
+                });
+                xhr.onerror = () => finish(reject, new Error('Network request failed'));
+                xhr.ontimeout = () => finish(reject, Object.assign(new Error('Request timed out'), { name: 'AbortError' }));
+                xhr.onabort = () => finish(reject, Object.assign(new Error('Request aborted'), { name: 'AbortError' }));
+                if (options.signal) {
+                    if (options.signal.aborted) return xhr.abort();
+                    options.signal.addEventListener('abort', () => xhr.abort(), { once: true });
+                }
+                xhr.send(options.body || null);
+            });
         }
 
         // 上传单个分片，带超时和重试。返回 {uploaded, durationMs} 用于进度和速度显示
@@ -1694,20 +2054,37 @@
             // 前端传递完整文件大小和修改时间，后端据此生成安全的 file_id（避免 stream.tell() 只返回分片大小）
             formData.append('file_size', file.size);
             formData.append('last_modified', file.lastModified || 0);
+            formData.append('client_id', getUploadClientId());
 
             let retries = UPLOAD_MAX_RETRIES;
             let delay = 2000;
             const startTime = performance.now();
+            // 真实速率：XHR 通过 upload.onprogress 实时累计已传输字节；fetch 兜底在成功时一次性计入整分片。
+            const chunkBase = _taskByteSamples.get(fileId)?.bytes || 0;
+            let recordedForChunk = chunkBase;
+            const onProgress = (e) => {
+                if (!e || typeof e.loaded !== 'number') return;
+                const target = chunkBase + Math.min(e.loaded, chunkData.size);
+                if (target > recordedForChunk) {
+                    const delta = target - recordedForChunk;
+                    recordedForChunk = target;
+                    recordUploadBytes(fileId, delta);
+                }
+            };
 
             while (true) {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), UPLOAD_CHUNK_TIMEOUT);
+                // 重试时从该分片的基线重新累计（失败尝试确实发送过这些字节，重新计入）
+                recordedForChunk = chunkBase;
+                const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                const timer = setTimeout(() => controller && controller.abort(), UPLOAD_CHUNK_TIMEOUT);
                 try {
-                    const response = await fetch(uploadUrl, {
+                    const response = await uploadRequest(uploadUrl, {
                         method: 'POST',
                         credentials: 'same-origin',
                         body: formData,
-                        signal: controller.signal
+                        signal: controller ? controller.signal : undefined,
+                        timeout: UPLOAD_CHUNK_TIMEOUT,
+                        onUploadProgress: onProgress
                     });
                     clearTimeout(timer);
 
@@ -1729,8 +2106,13 @@
                     } catch (e) {
                         // 响应是纯文本（最终分片返回 Success），忽略
                     }
-                    recordUploadByte(chunkSize);
-                    return { uploaded, durationMs: performance.now() - startTime };
+                    // 补齐到整分片大小：XHR 实时进度通常已接近全量，这里只补最后的小差额；
+                    // fetch 兜底没有进度事件，则一次性计入整个分片。
+                    if (chunkBase + chunkData.size > recordedForChunk) {
+                        recordUploadBytes(fileId, chunkBase + chunkData.size - recordedForChunk);
+                        recordedForChunk = chunkBase + chunkData.size;
+                    }
+                    return { uploaded, bytes: chunkData.size, durationMs: performance.now() - startTime };
                 } catch (error) {
                     clearTimeout(timer);
                     if (error.name === 'AbortError') {
@@ -1752,7 +2134,8 @@
         // prefix 由后端会话生成，防止不同用户/浏览器并发同名文件污染同一临时目录
         function makeFileId(file, relPath, prefix) {
             const lastMod = file.lastModified || 0;
-            return `${prefix}_${file.size}_${lastMod}_${relPath}`;
+            const safePath = String(relPath || file.name).replace(/[^a-zA-Z0-9_-]/g, '_');
+            return `${prefix}_${file.size}_${lastMod}_${safePath}`;
         }
 
         // 上传一个目录任务（调用后端 /api/mkdir）
@@ -1763,8 +2146,9 @@
                 const formData = new FormData();
                 formData.append('name', part);
                 formData.append('current_path', pathAcc);
-                const response = await fetch(`/api/mkdir/{{ dir_obj.alias }}`, {
+                const response = await uploadRequest(`/api/mkdir/{{ dir_obj.alias }}`, {
                     method: 'POST',
+                    credentials: 'same-origin',
                     body: formData
                 });
                 if (!response.ok) {
@@ -1780,6 +2164,7 @@
                 alert('请先选择要上传的文件或文件夹');
                 return;
             }
+            if (window._currentUpload?.running) return;
 
             // 先获取后端会话前缀，用于生成安全的 file_id
             await fetchUploadPrefix();
@@ -1806,6 +2191,12 @@
             let done = 0;
             let failed = 0;
             const uploadBtn = document.getElementById('uploadStartBtn');
+            uploadTasks.forEach((task, index) => {
+                if (!task.isDir && task.file) {
+                    task.fileId = task.fileId || makeFileId(task.file, task.relPath, uploadInitPrefix);
+                    task.pauseKey = task.fileId;
+                }
+            });
 
             if (uploadBtn) uploadBtn.disabled = true;
 
@@ -1816,13 +2207,28 @@
                 if (t.isDir || !t.file) {
                     taskChunkTotal.push(0);
                 } else {
-                    const c = Math.ceil(t.file.size / getChunkSize(t.file.size));
+                    const c = Math.max(1, Math.ceil(t.file.size / getChunkSize(t.file.size)));
                     taskChunkTotal.push(c);
                 }
             });
 
+            // 续传任务的初始分片数必须在计算总分片数后填充。
+            uploadTasks.forEach((task, index) => {
+                if (task.resumeInfo) {
+                    taskChunks[index] = Math.min(
+                        Number(task.resumeInfo.uploaded_chunks) || 0,
+                        Number(taskChunkTotal[index]) || 0
+                    );
+                }
+            });
+
             // 更新全局状态，供常驻条和 modal 共享（保留已有的 sessionId 等属性）
-            window._currentUpload = { ...window._currentUpload, running: true, done: 0, failed: 0, total, cancelled: false, taskChunks, taskChunkTotal, paused: new Set() };
+            window._currentUpload = {
+                ...window._currentUpload,
+                running: true, done: 0, failed: 0, completed: 0, total,
+                cancelled: false, taskChunks, taskChunkTotal,
+                paused: new Set(), cancelledTasks: new Set(), serverData: null
+            };
             
             // 立即保存状态到 sessionStorage（用于刷新恢复）
             saveUploadState();
@@ -1842,8 +2248,29 @@
 
             // 并发上传控制
             const MAX_CONCURRENT = window._uploadConcurrency || 5;
-            let running = 0;
             const taskResults = new Array(total).fill(null);
+            const runtime = {
+                taskResults,
+                total,
+                finished: 0,
+                running: 0,
+                failed: 0,
+                success: 0,
+                runningTasks: new Set()
+            };
+            window._currentUpload.runtime = runtime;
+            window._currentUpload.taskResults = taskResults;
+            window._currentUpload.runningTasks = runtime.runningTasks;
+            window._currentUpload.completed = 0;
+            window._currentUpload.done = 0;
+            window._currentUpload.failed = 0;
+            window._currentUpload.taskChunks = taskChunks;
+            window._currentUpload.taskChunkTotal = taskChunkTotal;
+            resetUploadSpeed();
+            showUploadingBar();
+            updatePersistentBarFromLocal();
+            startPolling();
+            renderTaskDetail();
 
             // 后台心跳：每隔 5 个分片刷新一次会话，防止长时间空转被断开
             let keepaliveCounter = 0;
@@ -1857,22 +2284,23 @@
 
             async function processTask(i) {
                 const task = uploadTasks[i];
-                // 确保 taskResults[i] 被设置，防止 cancelled 时遗漏导致递归
-                taskResults[i] = { ok: false, index: i, cancelled: true };
+                const u = window._currentUpload;
+                let ok = false;
+                runtime.runningTasks.add(i);
                 try {
                     // 目录任务
                     if (task.isDir || !task.file) {
                         setTaskState(i, '创建中...', 'text-primary');
                         updateSummary(done, total, `正在创建目录: ${task.relPath}`, taskChunks, taskChunkTotal);
                         await uploadDirectoryTask(task, currentPath);
-                        setTaskState(i, '✓ 已创建', 'text-success');
+                        setTaskState(i, '<i class="bi bi-check-lg me-1"></i>已创建', 'text-success');
+                        ok = true;
                     } else {
                         // 文件上传任务
                         const file = task.file;
                         const chunkSize = getChunkSize(file.size);
-                        const chunks = Math.ceil(file.size / chunkSize);
-                        const fileId = makeFileId(file, task.relPath, uploadInitPrefix);
-                        let ok = false;
+                        const chunks = Math.max(1, Math.ceil(file.size / chunkSize));
+                        const fileId = task.fileId || makeFileId(file, task.relPath, uploadInitPrefix);
 
                         try {
                             setTaskState(i, '上传中', 'text-primary');
@@ -1882,15 +2310,15 @@
                             if (uploaded >= chunks) uploaded = 0;
                             taskChunks[i] = uploaded;
 
-                            while (uploaded < chunks) {
+                                            while (uploaded < chunks) {
                                 // 检查全局取消
-                                if (window._currentUpload?.cancelled) {
+                                if (window._currentUpload?.cancelled || window._currentUpload?.cancelledTasks?.has(i)) {
                                     taskResults[i] = { ok: false, index: i, cancelled: true };
                                     return;
                                 }
-                                // 检查自身暂停
+                                // 检查自身暂停；暂停发生在请求期间时，当前分片完成后再停。
                                 const u = window._currentUpload;
-                                if (u?.paused?.has(i)) {
+                                if (u?.paused?.has(getTaskPauseKey(i))) {
                                     setTaskState(i, '已暂停', 'text-warning');
                                     // 等待暂停状态变化（每 200ms 检查一次）
                                     await new Promise(r => setTimeout(r, 200));
@@ -1899,34 +2327,40 @@
 
                                 const chunk = uploaded;
                                 updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${chunk + 1}/${chunks}）`, taskChunks, taskChunkTotal);
-                                const { uploaded: realUploaded, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
+                                const { uploaded: realUploaded, bytes, durationMs } = await uploadChunk(file, chunk, chunks, fileId, currentPath, task.relPath);
                                 uploaded = Math.max(realUploaded, chunk + 1);
                                 taskChunks[i] = uploaded;
-                                recordUploadByte(chunkSize);
-                                const speed = chunkSize / (durationMs / 1000);
-                                updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${uploaded}/${chunks} · ${formatSpeed(speed)}）`, taskChunks, taskChunkTotal);
+                                const speed = bytes / Math.max(0.001, durationMs / 1000);
+                                const formattedSpeed = formatSpeed(speed);
+                                updateSummary(done, total, `正在上传: ${task.relPath}（分片 ${uploaded}/${chunks} · ${formattedSpeed}）`, taskChunks, taskChunkTotal);
                                 await maybeKeepalive();
                             }
-                            setTaskState(i, '✓ 完成', 'text-success');
+                            setTaskState(i, '<i class="bi bi-check-lg me-1"></i>完成', 'text-success');
                             ok = true;
                         } catch (error) {
                             console.error(`Error uploading ${task.relPath}:`, error);
-                            setTaskState(i, '✗ 失败', 'text-danger');
-                            failed++;
+                            setTaskState(i, '<i class="bi bi-x-lg me-1"></i>失败', 'text-danger');
                         }
                     }
-                    taskResults[i] = { ok: true, index: i };
+                    taskResults[i] = { ok, index: i, cancelled: u.cancelledTasks?.has(i) };
+                    if (!ok && !u.cancelledTasks?.has(i)) failed++;
                 } catch (error) {
                     console.error(`Unexpected error in task ${i}:`, error);
                     taskResults[i] = { ok: false, index: i };
+                    failed++;
                 } finally {
-                    done++;
-                    running--;
-                    window._currentUpload.done = done;
-                    window._currentUpload.failed = failed;
-                    updateSummary(done, total, failed > 0
-                        ? `已完成 ${done}/${total}（失败 ${failed}）`
-                        : `已完成 ${done}/${total}`, taskChunks, taskChunkTotal);
+                    runtime.runningTasks.delete(i);
+                    runtime.running--;
+                    runtime.finished++;
+                    if (taskResults[i]?.ok) runtime.success++;
+                    runtime.failed = failed;
+                    done = runtime.success;
+                    window._currentUpload.done = runtime.success;
+                    window._currentUpload.failed = runtime.failed;
+                    window._currentUpload.completed = runtime.finished;
+                    updateSummary(runtime.success, total, failed > 0
+                        ? `已完成 ${runtime.finished}/${total}（失败 ${failed}）`
+                        : `已完成 ${runtime.finished}/${total}`, taskChunks, taskChunkTotal);
                     launchNext();
                 }
             }
@@ -1934,44 +2368,79 @@
             function launchNext() {
                 // 如果已取消，不再启动新任务
                 if (window._currentUpload?.cancelled) return;
-                for (let i = 0; i < total; i++) {
-                    // 跳过已完成、失败、暂停的任务
-                    if (taskResults[i] !== null) continue;
-                    if (window._currentUpload?.paused?.has(i)) continue;
-                    if (running < MAX_CONCURRENT) {
-                        running++;
-                        processTask(i).catch(e => console.error(e));
-                    }
+                for (let i = 0; i < runtime.total && runtime.running < MAX_CONCURRENT; i++) {
+                    // 跳过已完成、失败、运行中、暂停的任务
+                    if (taskResults[i] !== null || runtime.runningTasks.has(i)) continue;
+                    if (window._currentUpload?.paused?.has(getTaskPauseKey(i))) continue;
+                    runtime.running++;
+                    processTask(i).catch(e => console.error(e));
                 }
             }
-            // 暴露给外部调用（暂停恢复、追加任务时使用）
+            // 支持上传过程中追加文件：追加任务进入同一个 runtime 和并发调度器。
+            window._appendUploadTasks = async function (newTasks) {
+                if (!newTasks?.length || !window._currentUpload?.running) return;
+                newTasks.forEach(task => {
+                    if (!task.isDir && task.file) {
+                        task.fileId = task.fileId || makeFileId(task.file, task.relPath, uploadInitPrefix);
+                        task.pauseKey = task.fileId;
+                    }
+                    uploadTasks.push(task);
+                    taskChunks.push(0);
+                    taskChunkTotal.push(task.isDir || !task.file
+                        ? 0 : Math.max(1, Math.ceil(task.file.size / getChunkSize(task.file.size))));
+                        taskResults.push(null);
+                });
+                runtime.total += newTasks.length;
+                window._currentUpload.total = runtime.total;
+                await Promise.all(newTasks.map((task, offset) => {
+                    const idx = runtime.total - newTasks.length + offset;
+                    if (task.isDir || !task.file) return Promise.resolve();
+                    if (task.resumeInfo) {
+                        taskChunks[idx] = Math.min(task.resumeInfo.uploaded_chunks || 0, taskChunkTotal[idx]);
+                        return Promise.resolve();
+                    }
+                    return fetchUploadedChunks(task.fileId).then(n => {
+                        taskChunks[idx] = Math.min(n, taskChunkTotal[idx]);
+                    });
+                }));
+                renderSummary();
+                renderTaskDetail();
+                launchNext();
+            };
             window._launchNext = launchNext;
 
             // 初始启动
             launchNext();
 
             // 等待所有任务完成（取消则提前退出）
-            while (done + failed < total && !window._currentUpload?.cancelled) {
+            while (runtime.finished < runtime.total && !window._currentUpload?.cancelled) {
                 await new Promise(r => setTimeout(r, 200));
             }
+            // 取消只停止调度，不让尚未结束的请求继续写入完成态；它们会在下一次循环检查取消标记。
 
             if (uploadBtn) uploadBtn.disabled = false;
 
             // 标记上传结束，收起常驻条，更新全局状态
             window._currentUpload.running = false;
-            clearUploadState();
+            window._currentUpload.runtime = runtime;
+            if (window._currentUpload.cancelled) {
+                // 保留未完成任务的续传元数据，刷新后仍可选择原文件继续。
+                saveUploadState();
+            } else {
+                clearUploadState();
+            }
             const resultEl = document.getElementById('uploadResultArea');
             if (resultEl) resultEl.classList.remove('d-none');
 
             if (window._currentUpload?.cancelled) {
-                updateSummary(done, total, `上传已取消（成功 ${done} 项）`);
+                updateSummary(runtime.success, runtime.total, `上传已取消（成功 ${runtime.success} 项）`);
                 setTimeout(() => showUploadResult(), 800);
             } else if (failed > 0) {
-                updateSummary(done, total, `上传结束：成功 ${total - failed}/${total}，失败 ${failed} 项`);
+                updateSummary(runtime.success, runtime.total, `上传结束：成功 ${runtime.success}/${runtime.total}，失败 ${failed} 项`);
                 const retryBtn = document.getElementById('uploadRetryBtn');
                 if (retryBtn) retryBtn.classList.remove('d-none');
             } else {
-                updateSummary(done, total, '全部上传成功，即将刷新页面…');
+                updateSummary(runtime.success, runtime.total, '全部上传成功，即将刷新页面…');
                 setTimeout(() => {
                     showUploadResult();
                     location.reload();
@@ -1979,57 +2448,27 @@
             }
         }
 
-        // 重试失败的任务
+        // 重试失败项时重新进入统一调度器，继续使用服务端已有分片。
         async function retryFailedUploads() {
-            const failedIndices = [];
-            uploadTasks.forEach((task, i) => {
-                const stateEl = document.getElementById(`uploadTaskState_${i}`);
-                if (stateEl && stateEl.textContent.includes('失败')) {
-                    failedIndices.push(i);
-                    setTaskState(i, '等待重试...', 'text-warning');
-                }
+            if (window._currentUpload?.running) return;
+            const failedTasks = uploadTasks.filter((task, idx) => {
+                const result = window._currentUpload?.runtime?.taskResults?.[idx];
+                const stateEl = document.getElementById(`uploadTaskState_${idx}`);
+                return result && !result.ok && !result.cancelled
+                    || stateEl?.textContent.includes('失败');
             });
-            if (!failedIndices.length) return;
-            // 重新构建仅含失败项的临时任务列表，调用 processTask
-            // 简化：直接重新调用 startUpload，它会重新遍历所有任务（只重传失败的）
-            // 由于 retryBtn 会隐藏，这里手动触发
-            document.getElementById('uploadRetryBtn').classList.add('d-none');
-            const btn = document.getElementById('uploadStartBtn');
-            if (btn) btn.disabled = true;
-
-            // 重新从第0项开始，只处理失败的
-            // 先获取前缀，确保 fileId 格式正确
-            await fetchUploadPrefix();
-            async function retryOne(i) {
-                if (i >= failedIndices.length) {
-                    if (btn) btn.disabled = false;
-                    return;
-                }
-                const idx = failedIndices[i];
-                const task = uploadTasks[idx];
-                try {
-                    if (task.isDir || !task.file) {
-                        setTaskState(idx, '创建中...', 'text-primary');
-                        await uploadDirectoryTask(task, window.location.pathname);
-                        setTaskState(idx, '✓ 已重试', 'text-success');
-                    } else {
-                        const file = task.file;
-                        const chunkSize = getChunkSize(file.size);
-                        const chunks = Math.ceil(file.size / chunkSize);
-                        const fileId = makeFileId(file, task.relPath, uploadInitPrefix);
-                        for (let chunk = 0; chunk < chunks; chunk++) {
-                            setTaskState(idx, `上传中 ${chunk + 1}/${chunks}`, 'text-primary');
-                            await uploadChunk(file, chunk, chunks, fileId, window.location.pathname, task.relPath);
-                        }
-                        setTaskState(idx, '✓ 已重试', 'text-success');
-                    }
-                } catch (e) {
-                    console.error(`Retry failed for ${task.relPath}:`, e);
-                    setTaskState(idx, '✗ 重试失败', 'text-danger');
-                }
-                retryOne(i + 1);
-            }
-            retryOne(0);
+            if (!failedTasks.length) return;
+            uploadTasks = failedTasks.map(task => ({ ...task, resumeInfo: null }));
+            window._currentUpload = {
+                ...window._currentUpload,
+                running: false, cancelled: false, willResume: true,
+                runtime: null, paused: new Set(), cancelledTasks: new Set()
+            };
+            const retryBtn = document.getElementById('uploadRetryBtn');
+            if (retryBtn) retryBtn.classList.add('d-none');
+            renderSummary();
+            renderTaskDetail();
+            await startUpload();
         }
 
 
@@ -2090,7 +2529,7 @@
                     feedback.innerHTML = `${error}<br><small class="text-muted">建议: ${suggested} <a href="#" onclick="applySuggestion('${suggested}'); return false;" class="text-primary">使用建议</a></small>`;
                 }
             } else {
-                feedback.textContent = '✓ 文件夹名称有效';
+                feedback.innerHTML = '<i class="bi bi-check-lg me-1"></i>文件夹名称有效';
                 feedback.className = 'form-text text-success';
                 input.className = 'form-control is-valid';
                 createBtn.disabled = false;
@@ -2127,8 +2566,9 @@
             formData.append('current_path', currentPath);
 
             try {
-                const response = await fetch(`/api/mkdir/{{ dir_obj.alias }}`, {
+                const response = await uploadRequest(`/api/mkdir/{{ dir_obj.alias }}`, {
                     method: 'POST',
+                    credentials: 'same-origin',
                     body: formData
                 });
 

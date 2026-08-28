@@ -11,3 +11,6 @@ temp/
 venv_3.8/
 .playwright-mcp/
 config.key
+.freebuff/
+_admin_page.html
+screenshot_debug.png

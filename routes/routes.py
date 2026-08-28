@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -61,21 +62,44 @@ def safe_join_path(base_path, *paths):
         raise ValueError("Invalid path")
 
 
-def _upload_session_prefix():
-    """为当前 HTTP 会话生成唯一的上传标识前缀，防止不同用户或不同浏览器
-    的并发同名文件写入同一临时目录。
+def _upload_client_id():
+    """读取并规范化当前浏览器标签页的上传 client_id。"""
+    value = request.values.get('client_id', '')
+    value = re.sub(r'[^a-zA-Z0-9_-]', '_', value)[:128]
+    return value or 'legacy'
 
-    优先使用管理员 session 信息；访客用 remote_addr + 会话起始时间兜底。
-    """
-    if session.get('admin'):
-        return 'admin'
-    for key in session:
-        if key.startswith('dir_admin_') and not key.endswith('_time'):
-            return f'dir_{key[10:]}'
-    for key in session:
-        if key.startswith('auth_') and not key.endswith('_time'):
-            return f'view_{key[5:]}'
-    return f'anon_{request.remote_addr}'
+
+def _upload_session_prefix(client_id=None):
+    """为当前 Flask 会话和浏览器标签页生成稳定、隔离的上传前缀。"""
+    client_id = client_id or _upload_client_id()
+    owners = session.get('_upload_owners')
+    if not isinstance(owners, dict):
+        owners = {}
+    token = owners.get(client_id)
+    if not token:
+        token = str(_uuid.uuid4())
+        owners[client_id] = token
+        session['_upload_owners'] = owners
+        session.modified = True
+    digest = hashlib.sha256(f'{token}:{client_id}'.encode('utf-8')).hexdigest()[:32]
+    return f'u_{digest}'
+
+
+def _upload_owner_key(client_id=None):
+    return _upload_session_prefix(client_id)
+
+
+def _has_upload_permission(alias):
+    return bool(session.get('admin') or session.get(f'dir_admin_{alias}'))
+
+
+def _session_matches(session_id, alias, client_id=None):
+    """校验上传 session 是否属于当前标签页且目标目录一致。"""
+    sess = upload_sessions.get(session_id)
+    if not sess:
+        return False
+    owner = _upload_owner_key(client_id)
+    return sess.get('owner') == owner and sess.get('alias') == alias
 
 
 def generate_upload_file_id(file_size, last_modified, rel_path, prefix=None):
@@ -110,10 +134,27 @@ import uuid as _uuid
 upload_sessions = {}  # {session_id: {files: {file_id: {relPath, size, chunks, uploaded, ...}}}}
 # 用户 → session_id 映射（用于多 session 发现）
 _user_sessions = {}  # {flask_session_key: [session_id, ...]}
+# 上传 session 的“活跃”判定窗口（秒）：窗口内有分片请求/keepalive 视为上传正在进行
+UPLOAD_SESSION_ACTIVE_WINDOW = 120
 
 # 持久化文件路径
 _UPLOAD_SESSIONS_FILE = os.path.join(get_app_path(), 'upload_sessions.json')
-_persist_lock = threading.Lock()
+_persist_lock = threading.RLock()
+_session_lock = threading.RLock()
+_upload_file_locks = {}
+_upload_file_locks_guard = threading.Lock()
+
+
+def _get_upload_file_lock(file_id):
+    with _upload_file_locks_guard:
+        return _upload_file_locks.setdefault(file_id, threading.RLock())
+
+
+def _chunk_names(temp_dir):
+    if not os.path.isdir(temp_dir):
+        return []
+    return [name for name in os.listdir(temp_dir)
+            if re.fullmatch(r'chunk_[0-9]+', name)]
 
 
 def _save_upload_sessions():
@@ -154,20 +195,26 @@ def _load_upload_sessions():
 _load_upload_sessions()
 
 
-def _get_or_create_session(user_key):
-    """获取或创建当前用户的上传 session，返回 session_id。"""
-    if user_key not in _user_sessions:
-        _user_sessions[user_key] = []
-    # 查找现有未完成的 session（包括空的，因为用户可能正在上传）
-    for sid in _user_sessions[user_key]:
-        if sid in upload_sessions:
-            return sid
-    # 创建新 session
-    session_id = str(_uuid.uuid4())
-    upload_sessions[session_id] = {'files': {}, 'last_activity': time.time()}
-    _user_sessions[user_key].append(session_id)
-    _save_upload_sessions()
-    return session_id
+def _get_or_create_session(user_key, alias=None, prefix=None):
+    """获取或创建当前标签页和目录对应的上传 session。"""
+    with _session_lock:
+        if user_key not in _user_sessions:
+            _user_sessions[user_key] = []
+        for sid in _user_sessions[user_key]:
+            sess = upload_sessions.get(sid)
+            if sess and (alias is None or sess.get('alias') == alias):
+                return sid
+        session_id = str(_uuid.uuid4())
+        upload_sessions[session_id] = {
+            'files': {},
+            'last_activity': time.time(),
+            'owner': user_key,
+            'alias': alias,
+            'prefix': prefix or user_key
+        }
+        _user_sessions[user_key].append(session_id)
+        _save_upload_sessions()
+        return session_id
 
 
 def _cleanup_finished_sessions(user_key):
@@ -1007,86 +1054,96 @@ def upload_file(alias):
 
         # 后端安全生成 file_id：含 session 前缀，防止跨用户并发污染
         # 优先使用前端传来的完整文件大小（分片上传时 stream.tell() 只返回当前分片大小）
-        file_size = int(request.form.get('file_size', 0) or file.content_length or 0)
-        last_mod = int(request.form.get('last_modified', 0) or 0)
-        file_id = generate_upload_file_id(file_size, last_mod, safe_rel)
+        try:
+            file_size = int(request.form.get('file_size', 0) or file.content_length or 0)
+            last_mod = int(request.form.get('last_modified', 0) or 0)
+        except (TypeError, ValueError):
+            return "Invalid file metadata", 400
+        if file_size < 0 or not filename:
+            return "Invalid file metadata", 400
 
-        # 管理上传 session（基于 prefix 复用同一 session）
-        prefix = _upload_session_prefix()
-        session_id = _get_or_create_session(prefix)
-        if session_id not in upload_sessions:
-            upload_sessions[session_id] = {'files': {}, 'last_activity': time.time()}
+        client_id = _upload_client_id()
+        prefix = _upload_session_prefix(client_id)
+        file_id = generate_upload_file_id(file_size, last_mod, safe_rel, prefix)
+        session_id = _get_or_create_session(prefix, alias=alias, prefix=prefix)
         sess = upload_sessions[session_id]
-        if file_id not in sess['files']:
-            sess['files'][file_id] = {
-                'relPath': safe_rel,
-                'size': file_size,
-                'chunks': chunks,
-                'uploaded': 0,
-                'temp_dir': os.path.join(config.upload_temp_dir, file_id)
-            }
-
-        # 如果是普通上传（非分片）
-        if chunks == 1:
-            file.save(final_path)
-            client_info = get_client_info()
-            flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
-            sess['files'][file_id]['uploaded'] = 1
-            sess['last_activity'] = time.time()
-            _save_upload_sessions()
-            return "Success", 200
-
-        # 处理分片上传
-        temp_dir = os.path.join(config.upload_temp_dir, file_id)
-        os.makedirs(temp_dir, exist_ok=True)
-
-        # 保存分片
-        chunk_file = os.path.join(temp_dir, f"chunk_{chunk_number}")
-        file.save(chunk_file)
-
-        # 检查是否所有分片都已上传
-        uploaded_chunks = len([f for f in os.listdir(temp_dir) if f.startswith('chunk_')])
-        sess['files'][file_id]['uploaded'] = uploaded_chunks
+        # 分片请求到达即视为活跃（覆盖慢速传输中长时间无分片完成的场景）
         sess['last_activity'] = time.time()
+        file_lock = _get_upload_file_lock(file_id)
+        with file_lock:
+            info = sess['files'].get(file_id)
+            if info is None:
+                info = sess['files'][file_id] = {
+                    'relPath': safe_rel,
+                    'size': file_size,
+                    'last_modified': last_mod,
+                    'chunks': chunks,
+                    'uploaded': 0,
+                    'temp_dir': os.path.join(config.upload_temp_dir, file_id),
+                    'final_path': final_path,
+                    'status': 'uploading'
+                }
+            elif (info.get('relPath') != safe_rel or info.get('size') != file_size
+                  or info.get('last_modified', 0) != last_mod
+                  or info.get('chunks') != chunks or info.get('final_path') != final_path):
+                return "File metadata does not match upload session", 409
 
-        if uploaded_chunks == chunks:
-            # 合并所有分片（流式写入，避免大文件整片读入内存）
-            try:
-                with open(final_path, 'wb') as target_file:
-                    for i in range(chunks):
-                        chunk_path = os.path.join(temp_dir, f"chunk_{i}")
-                        with open(chunk_path, 'rb') as chunk:
-                            shutil.copyfileobj(chunk, target_file, 1024 * 1024)
-
-                # 清理临时文件
-                shutil.rmtree(temp_dir, ignore_errors=True)
-
-                # 标记完成
-                sess['files'][file_id]['uploaded'] = chunks
+            # 普通上传和分片上传统一在文件锁内完成，重复请求保持幂等。
+            if chunks == 1:
+                if info.get('status') == 'completed' and os.path.isfile(final_path):
+                    return jsonify({'file_id': file_id, 'uploaded_chunks': 1}), 200
+                file.save(final_path)
+                info['uploaded'] = 1
+                info['status'] = 'completed'
+                sess['last_activity'] = time.time()
                 _save_upload_sessions()
-
                 client_info = get_client_info()
                 flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
-                return jsonify({'file_id': file_id, 'uploaded_chunks': chunks}), 200
-            except Exception as e:
-                flask_app.logger.error(f"合并分片失败: {filename}, 错误: {e}")
-                return "Chunk merge failed", 500
+                return jsonify({'file_id': file_id, 'uploaded_chunks': 1}), 200
 
-        # 每上传 10 个分片保存一次，平衡性能和持久化
-        if uploaded_chunks % 10 == 0:
-            _save_upload_sessions()
+            temp_dir = info['temp_dir']
+            os.makedirs(temp_dir, exist_ok=True)
+            chunk_file = os.path.join(temp_dir, f"chunk_{chunk_number}")
+            if not os.path.exists(chunk_file):
+                file.save(chunk_file)
 
-        return jsonify({
-            'file_id': file_id,
-            'uploaded_chunks': uploaded_chunks,
-            'total_chunks': chunks
-        })
-    except Exception as e:
-        flask_app.logger.error(f"上传文件失败: {e}", exc_info=True)
-        return f"Internal error: {e}", 500
+            chunk_names = _chunk_names(temp_dir)
+            uploaded_chunks = len(chunk_names)
+            info['uploaded'] = min(uploaded_chunks, chunks)
+            sess['last_activity'] = time.time()
 
+            if uploaded_chunks == chunks and all(
+                    os.path.isfile(os.path.join(temp_dir, f"chunk_{i}")) for i in range(chunks)):
+                try:
+                    merge_path = final_path + '.uploading'
+                    with open(merge_path, 'wb') as target_file:
+                        for i in range(chunks):
+                            chunk_path = os.path.join(temp_dir, f"chunk_{i}")
+                            with open(chunk_path, 'rb') as chunk:
+                                shutil.copyfileobj(chunk, target_file, 1024 * 1024)
+                    os.replace(merge_path, final_path)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    info['uploaded'] = chunks
+                    info['status'] = 'completed'
+                    _save_upload_sessions()
+                    client_info = get_client_info()
+                    flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
+                    return jsonify({'file_id': file_id, 'uploaded_chunks': chunks}), 200
+                except Exception as e:
+                    try:
+                        if os.path.exists(merge_path): os.remove(merge_path)
+                    except OSError:
+                        pass
+                    flask_app.logger.error(f"合并分片失败: {filename}, 错误: {e}")
+                    return "Chunk merge failed", 500
 
-
+            if uploaded_chunks % 10 == 0 or uploaded_chunks == chunks - 1:
+                _save_upload_sessions()
+            return jsonify({
+                'file_id': file_id,
+                'uploaded_chunks': uploaded_chunks,
+                'total_chunks': chunks
+            })
     except Exception as e:
         flask_app.logger.error(f"上传文件失败: {e}", exc_info=True)
         return f"Internal error: {e}", 500
@@ -2174,15 +2231,22 @@ def share_batch_download(token):
 
 @flask_app.route('/api/upload/init')
 def upload_init():
-    """返回上传前缀及当前用户所有活跃 session 摘要，支持刷新后自动恢复。"""
-    prefix = _upload_session_prefix()
-    # 生成/复用 session（同一个 prefix 下复用同一个 session）
-    session_id = _get_or_create_session(prefix)
+    """返回当前标签页在目标目录下的上传 session 摘要。"""
+    alias = request.args.get('alias', '').strip()
+    if not alias or not _has_upload_permission(alias):
+        return jsonify({'error': 'Upload permission required'}), 403
+    client_id = _upload_client_id()
+    prefix = _upload_session_prefix(client_id)
+    session_id = _get_or_create_session(prefix, alias=alias, prefix=prefix)
     session['upload_session_id'] = session_id
 
-    # 构建活跃 session 列表
+    # 只返回当前标签页、当前目录的 session，避免多个标签页互相串任务。
+    session_ids = list(_user_sessions.get(prefix, []))
     all_sessions = []
-    for sid, sess in upload_sessions.items():
+    for sid in session_ids:
+        sess = upload_sessions.get(sid)
+        if not sess or sess.get('owner') != prefix or sess.get('alias') != alias:
+            continue
         files = sess.get('files', {})
         if not files:
             continue
@@ -2199,11 +2263,13 @@ def upload_init():
             'total_files': total,
             'completed_files': completed,
             'last_activity': sess.get('last_activity', 0),
+            'active': (time.time() - sess.get('last_activity', 0)) < UPLOAD_SESSION_ACTIVE_WINDOW,
             'files': [
                 {
                     'file_id': fid,
                     'rel_path': info['relPath'],
                     'size': info['size'],
+                    'last_modified': info.get('last_modified', 0),
                     'total_chunks': info['chunks'],
                     'uploaded_chunks': min(info.get('uploaded', 0), info['chunks']),
                     'progress': round(info.get('uploaded', 0) / info['chunks'] * 100, 1) if info['chunks'] > 0 else 0,
@@ -2222,10 +2288,11 @@ def upload_init():
 
 @flask_app.route('/api/upload/session/<session_id>')
 def upload_session_status(session_id):
-    """查询上传会话状态。"""
-    if session_id not in upload_sessions:
+    """查询当前标签页在指定目录下的上传会话状态。"""
+    alias = request.args.get('alias', '').strip()
+    if not alias or not _has_upload_permission(alias) or not _session_matches(session_id, alias):
         return jsonify({'error': 'Session not found'}), 404
-    
+
     sess = upload_sessions[session_id]
     files = []
     for file_id, info in sess['files'].items():
@@ -2233,7 +2300,7 @@ def upload_session_status(session_id):
         temp_dir = info.get('temp_dir', '')
         chunks_done = 0
         if os.path.exists(temp_dir):
-            chunks_done = len([f for f in os.listdir(temp_dir) if f.startswith('chunk_')])
+            chunks_done = len(_chunk_names(temp_dir))
         elif info.get('uploaded', 0) >= info.get('chunks', 1):
             chunks_done = info['chunks']
         
@@ -2241,6 +2308,7 @@ def upload_session_status(session_id):
             'file_id': file_id,
             'rel_path': info['relPath'],
             'size': info['size'],
+            'last_modified': info.get('last_modified', 0),
             'total_chunks': info['chunks'],
             'uploaded_chunks': max(chunks_done, info.get('uploaded', 0)),
             'progress': round(info.get('uploaded', 0) / info.get('chunks', 1) * 100, 1) if info.get('chunks', 1) > 0 else 0,
@@ -2261,12 +2329,27 @@ def upload_session_status(session_id):
     })
 
 
+@flask_app.route('/api/upload/session/<session_id>/deactivate', methods=['POST'])
+def upload_session_deactivate(session_id):
+    """将上传会话标记为“非活跃”，用于窗口刷新/关闭后让恢复条立即出现。
+    通过 sendBeacon 在 beforeunload 时调用，因此不做复杂校验，幂等。"""
+    alias = request.args.get('alias', '').strip()
+    if not alias or not _has_upload_permission(alias) or not _session_matches(session_id, alias):
+        return jsonify({'error': 'Session not found'}), 404
+    sess = upload_sessions.get(session_id)
+    if sess:
+        sess['last_activity'] = 0
+        _save_upload_sessions()
+    return jsonify({'ok': True})
+
+
 @flask_app.route('/api/upload/session/<session_id>/cancel', methods=['POST'])
 def upload_session_cancel(session_id):
-    """取消上传会话，清理服务端分片。"""
-    if session_id not in upload_sessions:
+    """取消当前标签页在指定目录下的上传会话。"""
+    alias = request.args.get('alias', '').strip()
+    if not alias or not _has_upload_permission(alias) or not _session_matches(session_id, alias):
         return jsonify({'error': 'Session not found'}), 404
-    
+
     sess = upload_sessions.pop(session_id)
     # 清理所有临时分片
     for file_id, info in sess.get('files', {}).items():
@@ -2274,7 +2357,34 @@ def upload_session_cancel(session_id):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
     
-    session.pop('upload_session_id', None)
+    owner = sess.get('owner')
+    if owner in _user_sessions:
+        _user_sessions[owner] = [sid for sid in _user_sessions[owner] if sid != session_id]
+    if session.get('upload_session_id') == session_id:
+        session.pop('upload_session_id', None)
+    _save_upload_sessions()
+    return jsonify({'ok': True})
+
+
+@flask_app.route('/api/upload/session/<session_id>/file/<path:file_id>/cancel', methods=['POST'])
+def upload_file_cancel(session_id, file_id):
+    """取消当前标签页会话中的单个未完成文件。"""
+    alias = request.args.get('alias', '').strip()
+    if not alias or not _has_upload_permission(alias) or not _session_matches(session_id, alias):
+        return jsonify({'error': 'Session not found'}), 404
+    sess = upload_sessions[session_id]
+    info = sess.get('files', {}).get(file_id)
+    if not info:
+        return jsonify({'error': 'File not found'}), 404
+    with _get_upload_file_lock(file_id):
+        if info.get('status') == 'completed':
+            return jsonify({'error': 'File already completed'}), 409
+        temp_dir = info.get('temp_dir', '')
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        del sess['files'][file_id]
+        sess['last_activity'] = time.time()
+        _save_upload_sessions()
     return jsonify({'ok': True})
 
 
@@ -2288,10 +2398,23 @@ def keepalive():
 
 @flask_app.route('/api/upload/status/<file_id>')
 def check_upload_status(file_id):
-    # file_id 已由后端 generate_upload_file_id 生成，含会话前缀防跨用户污染，无需额外鉴权
-    temp_dir = os.path.join(config.upload_temp_dir, file_id)
-    uploaded_chunks = len(os.listdir(temp_dir)) if os.path.exists(temp_dir) else 0
-    return jsonify({'uploaded_chunks': uploaded_chunks})
+    """查询当前标签页、当前目录下文件的已上传分片数。"""
+    alias = request.args.get('alias', '').strip()
+    if not alias or not _has_upload_permission(alias):
+        return jsonify({'error': 'Upload permission required'}), 403
+    prefix = _upload_session_prefix(request.args.get('client_id'))
+    session_ids = _user_sessions.get(prefix, [])
+    info = None
+    for sid in session_ids:
+        sess = upload_sessions.get(sid)
+        if sess and sess.get('alias') == alias and file_id in sess.get('files', {}):
+            info = sess['files'][file_id]
+            break
+    if not info:
+        return jsonify({'uploaded_chunks': 0})
+    temp_dir = info.get('temp_dir', '')
+    uploaded_chunks = len(_chunk_names(temp_dir)) if os.path.exists(temp_dir) else int(info.get('uploaded', 0))
+    return jsonify({'uploaded_chunks': min(uploaded_chunks, info.get('chunks', 1))})
 
 
 @flask_app.errorhandler(404)
