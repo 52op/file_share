@@ -252,6 +252,14 @@
                         </li>
                         {% endif %}
 
+                        {% if upload_center_visible %}
+                        <li class="nav-item me-2">
+                            <a class="nav-link" href="/upload-center">
+                                <i class="bi bi-cloud-arrow-up me-1"></i>上传中心
+                            </a>
+                        </li>
+                        {% endif %}
+
                         <li class="nav-item dropdown">
                             <a
                                 class="nav-link dropdown-toggle"
@@ -421,6 +429,19 @@
                 </a>
             </div>
         </footer>
+
+        <script>
+            // 全局处理：模态框隐藏前若焦点仍在框内，先把焦点移出，
+            // 避免焦点元素被 aria-hidden 隐藏时浏览器弹出警告（不改变焦点归还逻辑）。
+            document.addEventListener('hide.bs.modal', function (event) {
+                const modal = event.target;
+                const active = document.activeElement;
+                if (modal && active && active !== modal && modal.contains(active)) {
+                    active.blur();
+                    document.body.focus();
+                }
+            });
+        </script>
 
         <script>
             // 会话空闲自动登出：无操作达到超时阈值后静默刷新，由后端清除登录态

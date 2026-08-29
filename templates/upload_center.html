@@ -1,0 +1,168 @@
+{% extends "header.html" %}
+{% block content %}
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+            <h4 class="mb-0"><i class="bi bi-cloud-arrow-up me-2"></i>上传中心</h4>
+            <div>
+                <span class="text-muted small me-3" id="refreshHint" style="display:none">
+                    <i class="bi bi-arrow-repeat me-1"></i>每 10 秒自动刷新
+                </span>
+                <button class="btn btn-outline-primary" onclick="loadSessions()">
+                    <i class="bi bi-arrow-clockwise me-1"></i>刷新
+                </button>
+            </div>
+        </div>
+        <p class="text-muted small mb-4">
+            列出所有目录下未完成的上传。点击「去续传」进入对应目录后会自动出现恢复条，可直接继续上传。
+        </p>
+
+        <div id="sessionList">
+            <div class="text-center text-muted py-5">加载中...</div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let pollTimer = null;
+        let lastCount = -1;
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        function formatTime(ts) {
+            if (!ts) return '未知';
+            const diff = Math.max(0, Date.now() / 1000 - ts);
+            if (diff < 60) return '刚刚';
+            if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+            if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+            return new Date(ts * 1000).toLocaleString();
+        }
+
+        async function loadSessions() {
+            try {
+                const resp = await fetch('/api/upload/center', { credentials: 'same-origin' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                renderSessions(data.sessions || []);
+            } catch (e) {
+                document.getElementById('sessionList').innerHTML =
+                    '<div class="alert alert-danger mb-0">加载上传列表失败，请刷新重试。</div>';
+            }
+        }
+
+        function renderSessions(sessions) {
+            const wrap = document.getElementById('sessionList');
+            if (!sessions.length) {
+                wrap.innerHTML = `
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-check2-circle fs-1 d-block mb-2"></i>
+                        暂无未完成的上传
+                    </div>`;
+                return;
+            }
+            wrap.innerHTML = sessions.map(s => {
+                const pct = Math.min(100, Math.round(s.progress || 0));
+                const pending = (s.files || []).filter(f => f.status !== 'completed');
+                const names = pending.map(f => f.rel_path).join('、');
+                const statusBadge = s.active
+                    ? '<span class="badge bg-primary"><i class="bi bi-arrow-up-circle me-1"></i>上传中</span>'
+                    : '<span class="badge bg-warning text-dark"><i class="bi bi-play-circle me-1"></i>待续传</span>';
+                const dirUrl = `/dir/${encodeURIComponent(s.alias)}`;
+                return `
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                            <i class="bi bi-folder2-open text-primary"></i>
+                            <a href="${dirUrl}" class="fw-semibold text-decoration-none">${escapeHtml(s.alias)}</a>
+                            ${s.desc ? `<span class="text-muted small">${escapeHtml(s.desc)}</span>` : ''}
+                            ${statusBadge}
+                            <span class="text-muted small ms-auto">
+                                ${s.completed_files}/${s.total_files} 个文件已完成
+                            </span>
+                        </div>
+                        <div class="progress" style="height:8px">
+                            <div class="progress-bar bg-primary" style="width:${pct}%"></div>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mt-2 flex-wrap gap-2">
+                            <span class="text-muted small text-truncate" style="max-width:60%"
+                                  title="${escapeHtml(names)}">
+                                <i class="bi bi-file-earmark me-1"></i>${escapeHtml(names)}
+                            </span>
+                            <span class="d-flex align-items-center gap-3">
+                                <span class="text-muted small">最后活动：${formatTime(s.last_activity)}</span>
+                                <a href="${dirUrl}?resume=${encodeURIComponent(s.session_id)}" class="btn btn-sm btn-primary">
+                                    <i class="bi bi-play-fill me-1"></i>去续传
+                                </a>
+                                <button class="btn btn-sm btn-outline-danger"
+                                        onclick="cancelSession('${s.session_id}', '${encodeURIComponent(s.alias)}')">
+                                    <i class="bi bi-x-lg me-1"></i>取消
+                                </button>
+                            </span>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        async function cancelSession(sessionId, aliasEnc) {
+            const alias = decodeURIComponent(aliasEnc);
+            if (!confirm(`确定要取消目录「${alias}」下的未完成上传吗？已上传的分片将被删除。`)) return;
+            try {
+                const resp = await fetch(
+                    `/api/upload/session/${encodeURIComponent(sessionId)}/cancel?alias=${aliasEnc}`,
+                    { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+                );
+                if (!resp.ok) {
+                    alert('取消失败：可能没有权限或会话已结束。');
+                    return;
+                }
+                await loadSessions();
+            } catch (e) {
+                alert('取消失败，请重试。');
+            }
+        }
+
+        // SSE 实时推送：优先用 EventSource 近实时刷新；断开时自动退回 10s 轮询
+        let sse = null;
+        function startSse() {
+            if (!window.EventSource || sse) return;
+            try {
+                sse = new EventSource('/api/upload/center/stream');
+                sse.onmessage = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data && Array.isArray(data.sessions)) renderSessions(data.sessions);
+                    } catch (_) {}
+                };
+                sse.onerror = () => {
+                    if (sse) { sse.close(); sse = null; }
+                    // 30 秒后尝试重连 SSE；期间由 10s 轮询兜底
+                    setTimeout(startSse, 30000);
+                };
+            } catch (_) {
+                sse = null;
+            }
+        }
+
+        // 启动：立即加载 + 每 10 秒自动刷新（页面隐藏时暂停）+ SSE 实时推送
+        loadSessions();
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                document.getElementById('refreshHint').style.display = 'none';
+            } else if (!pollTimer) {
+                loadSessions();
+                pollTimer = setInterval(loadSessions, 10000);
+                document.getElementById('refreshHint').style.display = '';
+            }
+        });
+        pollTimer = setInterval(loadSessions, 10000);
+        document.getElementById('refreshHint').style.display = '';
+        startSse();
+    </script>
+{% endblock %}

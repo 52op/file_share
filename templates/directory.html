@@ -102,6 +102,11 @@
             border-color: #0d6efd;
             color: #0d6efd;
         }
+        .task-pause-btn i {
+            font-size: 14px;
+            line-height: 1;
+            vertical-align: middle;
+        }
         .task-cancel-btn {
             background: none;
             border: none;
@@ -795,7 +800,9 @@
 
         window.addEventListener('beforeunload', (e) => {
             const u = window._currentUpload;
-            if (!u?.running) return;
+            // 正在上传、或待续传（恢复条显示中）都通知服务端标记非活跃，
+            // 让其它标签页/刷新后的页面能立即出现恢复条
+            if (!u?.running && !u?.willResume) return;
             e.preventDefault();
             e.returnValue = '';
             // 离开/刷新前通知服务端本窗口的上传已停止，使恢复条能在新页面立即出现
@@ -871,16 +878,6 @@
             }
         });
 
-        // 在 modal 开始隐藏前移出焦点，避免 aria-hidden 警告
-        document.getElementById('uploadDialog').addEventListener('hide.bs.modal', () => {
-            const activeElement = document.activeElement;
-            if (activeElement && document.getElementById('uploadDialog').contains(activeElement)) {
-                activeElement.blur();
-                // 将焦点移到页面主体
-                document.body.focus();
-            }
-        });
-
         // 每 200ms 刷新常驻条，并持久化状态
         setInterval(() => {
             const u = window._currentUpload;
@@ -938,15 +935,23 @@
             return uploadTasks.findIndex(task => task.fileId === fileId || task.resumeInfo?.file_id === fileId);
         }
 
+        // 暂停/继续按钮图标（bi 图标）
+        function taskPauseIcon(paused) {
+            return paused
+                ? '<i class="bi bi-play-fill"></i>'
+                : '<i class="bi bi-pause-fill"></i>';
+        }
+
         function updateBarTaskButton(fileId) {
             const idx = findTaskIndexByFileId(fileId);
             const key = idx >= 0 ? getTaskPauseKey(idx) : fileId;
             const paused = window._currentUpload?.paused?.has(key);
             document.querySelectorAll('.task-pause-btn[data-file-id]').forEach(btn => {
                 if (btn.dataset.fileId !== fileId) return;
-                btn.textContent = paused ? '继续' : '暂停';
+                btn.innerHTML = taskPauseIcon(paused);
                 btn.classList.toggle('paused', paused);
                 btn.title = paused ? '继续' : '暂停';
+                btn.setAttribute('aria-label', paused ? '继续' : '暂停');
             });
         }
 
@@ -1053,7 +1058,9 @@
         }
 
         // 从服务端恢复中断的上传状态（通过 init 接口发现所有活跃 session）
-        async function restoreUploadStateFromServer() {
+        // forceSessionId：从上传中心「去续传」跳转（?resume=<sid>）时传入，
+        // 该会话立即显示恢复条，不再等待 active 窗口过期。
+        async function restoreUploadStateFromServer(forceSessionId) {
             const alias = '{{ dir_obj.alias }}';
             // 本窗口已在实际上传中，不参与恢复判断
             if (window._currentUpload?.running) return false;
@@ -1073,15 +1080,26 @@
                 // 恢复条已在显示（本窗口待续传），交给 1s 轮询处理即可
                 if (window._currentUpload?.willResume) return true;
 
-                // 上传正由其他窗口活跃进行：本窗口不显示恢复条，启动低频 watcher 等其结束/失效
-                const inactive = incomplete.filter(s => !s.active);
-                if (inactive.length === 0) {
-                    startSessionWatcher();
-                    return false;
+                let sess = null;
+                if (forceSessionId) {
+                    // 用户从上传中心明确点了「去续传」：直接恢复该会话，无视 active 状态
+                    sess = incomplete.find(s => s.session_id === forceSessionId) || null;
+                    if (sess) {
+                        stopSessionWatcher();
+                        // 标记为可恢复：即使旧标签页有在途分片请求竞态，也不会让本窗口继续干等
+                        fetch(`/api/upload/session/${encodeURIComponent(forceSessionId)}/deactivate?alias=${encodeURIComponent(alias)}&client_id=${encodeURIComponent(getUploadClientId())}`, { method: 'POST', credentials: 'same-origin', keepalive: true }).catch(() => {});
+                    }
                 }
-
-                stopSessionWatcher();
-                const sess = inactive[inactive.length - 1];
+                if (!sess) {
+                    // 上传正由其他窗口活跃进行：本窗口不显示恢复条，启动低频 watcher 等其结束/失效
+                    const inactive = incomplete.filter(s => !s.active);
+                    if (inactive.length === 0) {
+                        startSessionWatcher();
+                        return false;
+                    }
+                    stopSessionWatcher();
+                    sess = inactive[inactive.length - 1];
+                }
 
                 // 保存文件元数据到 localStorage（供后续匹配用）
                 const incompleteFiles = sess.files.filter(f => f.status !== 'completed');
@@ -1173,7 +1191,7 @@
                             <span class="text-truncate flex-grow-1 align-middle" data-file-name title="${f.rel_path}"><i class="bi bi-file-earmark me-1"></i>${f.rel_path}</span>
                             <span class="text-muted" data-file-progress style="min-width:80px;text-align:right">${Number(f.progress || 0).toFixed(0)}%</span>
                             <span class="d-flex gap-1 flex-shrink-0">
-                                <button class="task-pause-btn" data-file-id="${fileId}" onclick="${idx >= 0 ? `toggleBarTaskPause('${fileId}')` : `resumeFromFile('${fileId}')`}" title="${idx >= 0 ? (paused ? '继续' : '暂停') : '选择该文件继续上传'}">${idx >= 0 ? (paused ? '继续' : '暂停') : '继续'}</button>
+                                <button class="task-pause-btn" data-file-id="${fileId}" onclick="${idx >= 0 ? `toggleBarTaskPause('${fileId}')` : `resumeFromFile('${fileId}')`}" title="${idx >= 0 ? (paused ? '继续' : '暂停') : '选择该文件继续上传'}" aria-label="${idx >= 0 ? (paused ? '继续' : '暂停') : '选择该文件继续上传'}">${taskPauseIcon(idx >= 0 ? paused : false)}</button>
                                 <button class="task-cancel-btn" onclick="cancelBarFile('${fileId}')" title="取消">×</button>
                             </span>
                         </div>`;
@@ -1268,8 +1286,9 @@
                     if (progressEl) progressEl.textContent = `${Number(f.progress || 0).toFixed(1)}%${taskSpeed ? ` · ${taskSpeed}` : ''}`;
                     const pauseBtn = row.querySelector('.task-pause-btn');
                     pauseBtn.dataset.fileId = fileId;
-                    pauseBtn.textContent = idx >= 0 ? (paused ? '继续' : '暂停') : '继续';
+                    pauseBtn.innerHTML = taskPauseIcon(idx >= 0 ? paused : false);
                     pauseBtn.title = idx >= 0 ? (paused ? '继续' : '暂停') : '选择该文件继续上传';
+                    pauseBtn.setAttribute('aria-label', pauseBtn.title);
                     pauseBtn.onclick = () => idx >= 0 ? toggleBarTaskPause(fileId) : resumeFromFile(fileId);
                     const cancelBtn = row.querySelector('.task-cancel-btn');
                     cancelBtn.dataset.fileId = fileId;
@@ -1675,7 +1694,7 @@
                 // 只为文件任务添加暂停/继续和取消按钮
                 const fileId = task.fileId || task.resumeInfo?.file_id || key;
                 const pauseBtn = !task.isDir
-                    ? `<button class="task-pause-btn" data-task="${idx}" data-file-id="${fileId}" onclick="togglePause(${idx})" title="${paused ? '继续' : '暂停'}">${paused ? '继续' : '暂停'}</button>`
+                    ? `<button class="task-pause-btn" data-task="${idx}" data-file-id="${fileId}" onclick="togglePause(${idx})" title="${paused ? '继续' : '暂停'}" aria-label="${paused ? '继续' : '暂停'}">${taskPauseIcon(paused)}</button>`
                     : '';
                 const cancelBtn = !task.isDir
                     ? `<button class="task-cancel-btn" onclick="cancelTask(${idx})" title="取消任务">×</button>`
@@ -3046,9 +3065,18 @@
             });
             
             // 页面加载时从服务端恢复中断的上传状态
+            // 支持从上传中心「去续传」跳转：?resume=<session_id> 时立即显示该会话恢复条
             (async () => {
-                const ok = await restoreUploadStateFromServer();
+                const params = new URLSearchParams(location.search);
+                const resumeSid = params.get('resume');
+                const ok = await restoreUploadStateFromServer(resumeSid || null);
                 if (ok) startPolling();
+                if (resumeSid) {
+                    // 清理 URL，避免刷新后重复触发强制恢复
+                    const url = new URL(location.href);
+                    url.searchParams.delete('resume');
+                    history.replaceState(null, '', url.pathname + url.search + url.hash);
+                }
             })();
         });
         /* 移动文件逻辑 */
