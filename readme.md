@@ -1,7 +1,7 @@
 # file_share - HTTP 文件分享服务器
 ![软件界面](https://cdn.jsdelivr.net/gh/52op/file_share/preview_1.png "软件界面")
 
-file_share 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分享工具，支持通过浏览器快速访问和下载共享的文件。它不仅可以作为前台窗口服务运行，还可以安装为 Windows 系统服务，实现开机自启动。无论是局域网内的文件共享，还是临时搭建一个文件下载服务器，file_share 都能轻松应对。
+file_share 是一个基于 Python Flask 的轻量级 HTTP 文件分享工具，支持通过浏览器快速访问、上传和下载共享的文件。它不仅可以作为前台窗口服务运行，还可以安装为 Windows 系统服务，实现开机自启动；支持 HTTPS 加密访问与 Caddy 自动证书。无论是局域网内的文件共享，还是临时搭建一个文件下载服务器，file_share 都能轻松应对。
 
 # 为什么重复造轮子？
 ***现在能用的相似工具太高端了，什么go什么rust啊等等写的，好看也好用***
@@ -31,6 +31,16 @@ file_share 是一个基于 Python Flask 和 Waitress 的轻量级 HTTP 文件分
 - **显隐密码（可选）**：程序目录下存在 `showpasswd` 文件时，GUI 密码输入框旁显示眼睛图标按钮，可临时查看明文（适用于单机、可信环境）；删除该文件即恢复默认遮蔽，无需重新初始化。
 
 - **管理密码**：设置一个管理密码，该密码在前端 WEB 页面中任何需要输入密码的地方都可以使用。
+
+- **上传中心与断点续传**：支持并发、分片、断点续传的大文件上传，关闭上传弹窗后仍有常驻进度条展示进度（可点击恢复窗口）；任务支持暂停/继续、失败重试、取消，上传中断后可恢复续传，刷新页面也不丢失进度。
+
+- **上传并发与分片可配置**：上传并发数和分片大小可在系统设置中调整（内网高速链路可调大），前端实时显示上传速率。
+
+- **HTTPS / SSL 支持（两种模式）**：
+  - **证书下载模式**：从自建证书服务器下载 `{域名}_{日期}.zip` 证书包，Cheroot/Werkzeug 使用内置证书提供 HTTPS。
+  - **Caddy 自动 HTTPS（推荐）**：集成 Caddy 反向代理，自动申请与续期 Let's Encrypt 证书，支持阿里云/腾讯云/Cloudflare 的 DNS-01 验证（无需对外开放 80/443 端口），凭据加密存储、运行时注入环境变量，一键下载内置 DNS 插件的 caddy.exe。
+
+- **移动端适配**：WEB 页面针对手机/平板优化，窄屏下操作按钮常驻显示、长文件名自动折行、按钮自动换行不挤压。
 
 - **分享链接生成**：在 WEB 页面中，你可以把当前文件或目录生成一个分享链接，支持加密分享链接，就像百度网盘一样。
 
@@ -99,11 +109,13 @@ file_share 基于 Python 开发，使用了以下技术栈：
 
 - **Flask**：轻量级的 Web 框架，用于处理 HTTP 请求和响应。
 
-- **Waitress**：生产级的 WSGI 服务器，支持多线程，适合高并发场景。
+- **Waitress / Cheroot / Werkzeug**：可切换的多线程 WSGI 服务器，支持多线程，适合高并发场景。
 
-- **Tkinter**：Python 的标准 GUI 库，用于构建程序界面。
+- **Tkinter + TTKBootstrap**：Python 的标准 GUI 库与现代化主题库，使界面更加美观。
 
-- **TTKBootstrap**：基于 Tkinter 的现代化主题库，使界面更加美观。
+- **Caddy（可选）**：反向代理自动 HTTPS，DNS-01 验证支持阿里云 DNS / 腾讯云 DNSPod / Cloudflare，全库插件版可一键从官方 API 下载。
+
+- **PyInstaller**：自动打包为单文件版（`file_share.exe`）或解压版（`file_share.zip`，方便修改模板与静态资源），CI 通过 GitHub Actions 在推送 `v*` 标签时自动构建并发布 Release。
 ![前端WEB界面](https://cdn.jsdelivr.net/gh/52op/file_share/preview_3.png "前端WEB界面")
 ![图片预览](https://cdn.jsdelivr.net/gh/52op/file_share/preview_4.png "图片预览")
 ![在线代码类文档预览编辑](https://cdn.jsdelivr.net/gh/52op/file_share/preview_5.png "在线代码类文档预览编辑")
