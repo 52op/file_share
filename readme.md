@@ -1,5 +1,5 @@
 # file_share - HTTP 文件分享服务器
-![软件界面](https://cdn.jsdelivr.net/gh/52op/file_share/preview_1.png "软件界面")
+![软件界面](Screenshot/xw_20260831235203.png "软件界面")
 
 file_share 是一个基于 Python Flask 的轻量级 HTTP 文件分享工具，支持通过浏览器快速访问、上传和下载共享的文件。它不仅可以作为前台窗口服务运行，还可以安装为 Windows 系统服务，实现开机自启动；支持 HTTPS 加密访问与 Caddy 自动证书。无论是局域网内的文件共享，还是临时搭建一个文件下载服务器，file_share 都能轻松应对。
 
@@ -83,7 +83,7 @@ pyinstaller main-zip.spec
 2. 点击“添加目录”，选择你要共享的文件夹，设置显示名称和访问密码（可选）,也可以直接拖曳文件夹到程序窗口。
 
 3. 你可以添加多个共享目录。
-![软件界面](https://cdn.jsdelivr.net/gh/52op/file_share/preview_2.png "软件界面")
+![软件界面](Screenshot/xw_20260831235510.png "软件界面")
 
 ### 3. 启用/关闭"显隐密码"按钮
 
@@ -116,12 +116,16 @@ file_share 基于 Python 开发，使用了以下技术栈：
 - **Caddy（可选）**：反向代理自动 HTTPS，DNS-01 验证支持阿里云 DNS / 腾讯云 DNSPod / Cloudflare，全库插件版可一键从官方 API 下载。
 
 - **PyInstaller**：自动打包为单文件版（`file_share.exe`）或解压版（`file_share.zip`，方便修改模板与静态资源），CI 通过 GitHub Actions 在推送 `v*` 标签时自动构建并发布 Release。
-![前端WEB界面](https://cdn.jsdelivr.net/gh/52op/file_share/preview_3.png "前端WEB界面")
-![图片预览](https://cdn.jsdelivr.net/gh/52op/file_share/preview_4.png "图片预览")
-![在线代码类文档预览编辑](https://cdn.jsdelivr.net/gh/52op/file_share/preview_5.png "在线代码类文档预览编辑")
+![前端WEB界面](Screenshot/preview_3.png "前端WEB界面")
+![图片预览](Screenshot/preview_4.png "图片预览")
+![在线代码类文档预览编辑](Screenshot/preview_5.png "在线代码类文档预览编辑")
+![前端WEB上传](Screenshot/xw_20260831235627.png "前端WEB上传")
+![前端WEB上传中心](Screenshot/xw_20260831235645.png "前端WEB上传中心")
+![前端WEB私有分享](Screenshot/xw_20260831235730.png "前端WEB私有分享")
+![前端WEB私有分享](Screenshot/xw_20260831235752.png "前端WEB私有分享")
 ## 未来计划
 
-- 没有计划
+- 你的想法就是我的计划，欢迎提交需求
 
 ## 贡献与反馈
 
