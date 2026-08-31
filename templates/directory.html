@@ -180,40 +180,38 @@
         </div>
 
         {% if session.get('admin') %}
-            <div class="mb-3">
-                <button class="btn btn-primary me-2" onclick="showUploadDialog()">
+            <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+                <button class="btn btn-primary" onclick="showUploadDialog()">
                     <i class="bi bi-upload me-2"></i>上传文件
                 </button>
                 <button class="btn btn-success" onclick="showNewFolderDialog()">
                     <i class="bi bi-folder-plus me-2"></i>新建文件夹
                 </button>
-                <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger float-end">
-                    <i class="bi bi-box-arrow-right me-2"></i>退出超级管理
-                </a>
-                {#                <a class="btn btn-secondary float-end" href="/share-manager/{{ dir_obj.path|extract_first_dir }}" target="_blank">#}
-                <a class="btn btn-secondary float-end me-2" href="/share-manager/{{ dir_obj.alias }}" target="_blank">
+                <a class="btn btn-secondary ms-auto" href="/share-manager/{{ dir_obj.alias }}" target="_blank">
                     <i class="bi bi-share me-2"></i>私有分享
                 </a>
-
+                <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger">
+                    <i class="bi bi-box-arrow-right me-2"></i>退出超级管理
+                </a>
             </div>
         {% elif session.get('dir_admin_' + current_dir) %}
-            <div class="mb-3">
-                <button class="btn btn-primary me-2" onclick="showUploadDialog()">
+            <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+                <button class="btn btn-primary" onclick="showUploadDialog()">
                     <i class="bi bi-upload me-2"></i>上传文件
                 </button>
                 <button class="btn btn-success" onclick="showNewFolderDialog()">
                     <i class="bi bi-folder-plus me-2"></i>新建文件夹
                 </button>
-                <a href="{{ url_for('dir_admin_logout', dirname=current_dir) }}" class="btn btn-outline-warning float-end">
-                    <i class="bi bi-box-arrow-right me-2"></i>退出目录管理
-                </a>
-                <span class="badge bg-warning text-dark float-end me-2 align-self-center">
+                <span class="badge bg-warning text-dark ms-auto align-self-center">
                     <i class="bi bi-shield-check me-1"></i>目录管理员
                 </span>
+                <a href="{{ url_for('dir_admin_logout', dirname=current_dir) }}" class="btn btn-outline-warning">
+                    <i class="bi bi-box-arrow-right me-2"></i>退出目录管理
+                </a>
             </div>
         {% else %}
-            <div class="mb-3">
-                <button class="btn btn-outline-primary me-2" onclick="showAdminLogin()">
+            <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+                <button class="btn btn-outline-primary" onclick="showAdminLogin()">
                     <i class="bi bi-shield-lock me-2"></i>超级管理员登录
                 </button>
                 {% if dir_obj.admin_password %}

@@ -5,27 +5,31 @@
     <div class="container py-5">
         <!-- Admin Status Bar -->
         <div class="row mb-4">
-            <div class="col d-flex justify-content-between align-items-center">
-                <h3 class="display-6 fw-bold text-primary">
+            <div class="col d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-2 gap-md-0">
+                <h3 class="display-6 fw-bold text-primary mb-0">
                     <i class="bi bi-folder2-open me-2"></i>目录列表
                 </h3>
-                <div>
-                    <button id="toggleViewBtn" class="btn btn-outline-info me-2" onclick="toggleView()">
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <button id="toggleViewBtn" class="btn btn-outline-info" onclick="toggleView()" title="切换视图">
                         <i class="bi bi-card-list"></i>
                     </button>
                     {% if session.admin %}
-                        <div class="admin-controls d-inline">
-                            <button class="btn btn-success me-2" data-bs-toggle="modal" data-bs-target="#addDirModal">
-                                <i class="bi bi-plus-circle me-1"></i>添加目录
+                        <div class="admin-controls d-flex flex-wrap align-items-center gap-2">
+                            <button class="btn btn-success" title="添加目录" data-bs-toggle="modal" data-bs-target="#addDirModal">
+                                <i class="bi bi-plus-circle"></i>
+                                <span class="d-none d-sm-inline ms-1">添加目录</span>
                             </button>
-                            <button class="btn btn-info me-2" data-bs-toggle="modal" data-bs-target="#settingsModal">
-                                <i class="bi bi-gear me-1"></i>系统设置
+                            <button class="btn btn-info" title="系统设置" data-bs-toggle="modal" data-bs-target="#settingsModal">
+                                <i class="bi bi-gear"></i>
+                                <span class="d-none d-sm-inline ms-1">系统设置</span>
                             </button>
-                            <a class="btn btn-secondary me-2" href="/share-manager" target="_blank">
-                                <i class="bi bi-share me-1"></i>私有分享
+                            <a class="btn btn-secondary" href="/share-manager" target="_blank" title="私有分享">
+                                <i class="bi bi-share"></i>
+                                <span class="d-none d-sm-inline ms-1">私有分享</span>
                             </a>
-                            <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger">
-                                <i class="bi bi-box-arrow-right me-1"></i>退出管理
+                            <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger" title="退出管理">
+                                <i class="bi bi-box-arrow-right"></i>
+                                <span class="d-none d-sm-inline ms-1">退出管理</span>
                             </a>
                         </div>
                     {% else %}

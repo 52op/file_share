@@ -95,10 +95,10 @@
                 box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
             }
 
+            /* 移动端：仅让搜索框自适应，不全局覆盖 .d-flex */
             @media (max-width: 768px) {
-                .d-flex {
+                .input-group.search {
                     width: 100%;
-                    margin: 10px 0;
                 }
             }
             .input-group.search {

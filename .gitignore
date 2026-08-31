@@ -2,6 +2,8 @@ venv/
 __pycache__/
 build/
 certs/
+caddy/
+caddy.exe
 dist/
 logs/
 temp/

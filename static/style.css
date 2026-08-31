@@ -59,3 +59,21 @@
     display: block;
 }
 
+/* 移动端适配：触摸设备没有 hover，操作按钮需要常驻显示；
+   同时允许列表项换行、长文件名折行，避免元素相互挤压 */
+@media (max-width: 767.98px) {
+    .list-group-item {
+        flex-wrap: wrap;
+    }
+    .item-actions {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin: 2px 0;
+    }
+    .item-link {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+}
+

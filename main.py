@@ -478,6 +478,15 @@ class Config:
         self.ssl_domain = ""  # SSL绑定域名
         self.cert_dir = "certs"  # 证书存储目录
 
+        # Caddy 自动 HTTPS 配置
+        self.caddy_enabled = False  # 是否使用 Caddy 反向代理自动 HTTPS
+        self.caddy_dns_provider = "alidns"  # DNS 提供商: alidns/tencentcloud/cloudflare
+        self.caddy_access_key_id = ""  # 阿里云 AccessKey ID（DNS-01 验证）
+        self.caddy_access_key_secret = ""  # 阿里云 AccessKey Secret（DNS-01 验证）
+        self.caddy_tencent_secret_id = ""  # 腾讯云 SecretId（DNSPod DNS-01 验证）
+        self.caddy_tencent_secret_key = ""  # 腾讯云 SecretKey（DNSPod DNS-01 验证）
+        self.caddy_cloudflare_api_token = ""  # Cloudflare API Token（DNS-01 验证）
+
         # 页面设置
         self.page_title = "FS文件分享服务工具"
         self.logo_name = "File Share"
@@ -517,6 +526,14 @@ class Config:
             "cert_server_url": self.cert_server_url,
             "ssl_domain": self.ssl_domain,
             "cert_dir": self.cert_dir,
+            # Caddy 自动 HTTPS 配置
+            "caddy_enabled": self.caddy_enabled,
+            "caddy_dns_provider": self.caddy_dns_provider,
+            "caddy_access_key_id": get_crypto().encrypt(self.caddy_access_key_id),
+            "caddy_access_key_secret": get_crypto().encrypt(self.caddy_access_key_secret),
+            "caddy_tencent_secret_id": get_crypto().encrypt(self.caddy_tencent_secret_id),
+            "caddy_tencent_secret_key": get_crypto().encrypt(self.caddy_tencent_secret_key),
+            "caddy_cloudflare_api_token": get_crypto().encrypt(self.caddy_cloudflare_api_token),
             # 页面设置
             "page_title": self.page_title,
             "logo_name": self.logo_name,
@@ -577,6 +594,24 @@ class Config:
                 self.cert_server_url = data.get("cert_server_url", "")
                 self.ssl_domain = data.get("ssl_domain", "")
                 self.cert_dir = data.get("cert_dir", "certs")
+                # Caddy 自动 HTTPS 配置
+                self.caddy_enabled = data.get("caddy_enabled", False)
+                self.caddy_dns_provider = data.get("caddy_dns_provider", "alidns")
+                self.caddy_access_key_id = get_crypto().decrypt(
+                    data.get("caddy_access_key_id", "")
+                )
+                self.caddy_access_key_secret = get_crypto().decrypt(
+                    data.get("caddy_access_key_secret", "")
+                )
+                self.caddy_tencent_secret_id = get_crypto().decrypt(
+                    data.get("caddy_tencent_secret_id", "")
+                )
+                self.caddy_tencent_secret_key = get_crypto().decrypt(
+                    data.get("caddy_tencent_secret_key", "")
+                )
+                self.caddy_cloudflare_api_token = get_crypto().decrypt(
+                    data.get("caddy_cloudflare_api_token", "")
+                )
                 # 页面设置
                 self.page_title = data.get("page_title", "FS文件分享服务工具")
                 self.logo_name = data.get("logo_name", "File Share")
@@ -1169,11 +1204,27 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
             self.ssl_manager = SSLCertificateManager(config)
 
+            # 初始化 Caddy 管理器（服务模式同样支持 Caddy 自动 HTTPS）
+            from caddy_manager import CaddyManager
+
+            self.caddy_manager = CaddyManager(config)
+
             self.logger.info("服务初始化完成")
         except Exception as e:
             # 使用 Windows 事件日志记录初始化错误
             servicemanager.LogErrorMsg(f"服务初始化失败: {str(e)}")
             raise
+
+    def _caddy_mode_active(self):
+        """服务模式：判断是否使用 Caddy 反代自动 HTTPS"""
+        try:
+            return bool(
+                config.ssl_enabled
+                and config.caddy_enabled
+                and self.caddy_manager.caddy_available()
+            )
+        except Exception:
+            return False
 
     def SvcDoRun(self):
         try:
@@ -1228,7 +1279,19 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
                         # 如果启用SSL，创建HTTPS服务器
                         if config.ssl_enabled:
-                            if self.ssl_manager.has_valid_certificate():
+                            if self._caddy_mode_active():
+                                # Caddy 反代模式：HTTPS 由 Caddy 托管，无需 Cheroot HTTPS
+                                self.logger.info(
+                                    f"Caddy 反代模式：HTTPS 端口 {config.ssl_port} 由 Caddy 接管"
+                                )
+                                if self.caddy_manager.start():
+                                    self.logger.info(
+                                        f"Caddy 反代已启动: "
+                                        f"https://{config.ssl_domain}:{config.ssl_port}"
+                                    )
+                                else:
+                                    self.logger.error("Caddy 反代启动失败")
+                            elif self.ssl_manager.has_valid_certificate():
                                 cert_path = self.ssl_manager.get_cert_file_path()
                                 key_path = self.ssl_manager.get_key_file_path()
                                 if cert_path and key_path:
@@ -1293,7 +1356,19 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
                         # 如果启用SSL，创建HTTPS服务器
                         if config.ssl_enabled:
-                            if self.ssl_manager.has_valid_certificate():
+                            if self._caddy_mode_active():
+                                # Caddy 反代模式：HTTPS 由 Caddy 托管，无需 Werkzeug HTTPS
+                                self.logger.info(
+                                    f"Caddy 反代模式：HTTPS 端口 {config.ssl_port} 由 Caddy 接管"
+                                )
+                                if self.caddy_manager.start():
+                                    self.logger.info(
+                                        f"Caddy 反代已启动: "
+                                        f"https://{config.ssl_domain}:{config.ssl_port}"
+                                    )
+                                else:
+                                    self.logger.error("Caddy 反代启动失败")
+                            elif self.ssl_manager.has_valid_certificate():
                                 cert_path = self.ssl_manager.get_cert_file_path()
                                 key_path = self.ssl_manager.get_key_file_path()
                                 if cert_path and key_path:
@@ -1357,14 +1432,17 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.server_thread = threading.Thread(target=run_server, daemon=True)
             self.server_thread.start()
 
-            # 添加防火墙规则
-            self.add_firewall_rule(config.port)
+            # 添加防火墙规则（HTTP + HTTPS 合并为一条，逗号分隔）
+            firewall_ports = [config.port]
+            if config.ssl_enabled and config.ssl_port and config.ssl_port != config.port:
+                firewall_ports.append(config.ssl_port)
+            self.add_firewall_rule(firewall_ports)
 
             if config.auto_cleanup and not is_cleanup_running():
                 start_cleanup_thread()  # 启动清理线程
 
-            # 启动SSL证书监控（系统服务模式）
-            if config.ssl_enabled:
+            # 启动SSL证书监控（系统服务模式）- Caddy 模式下由 Caddy 自行申请/续签
+            if config.ssl_enabled and not self._caddy_mode_active():
                 self.ssl_manager.start_certificate_monitor()
                 self.logger.info("系统服务SSL证书监控已启动")
 
@@ -1411,6 +1489,15 @@ class FileShareService(win32serviceutil.ServiceFramework):
                         self.logger.info("HTTPS服务器已停止")
                 except Exception as e:
                     self.logger.error(f"停止HTTPS服务器时发生错误: {e}")
+
+            # 2.5 停止 Caddy 反向代理（如有）
+            if hasattr(self, "caddy_manager"):
+                try:
+                    if self.caddy_manager.is_running():
+                        self.caddy_manager.stop()
+                        self.logger.info("Caddy 反代已停止")
+                except Exception as e:
+                    self.logger.error(f"停止 Caddy 反代时发生错误: {e}")
 
             # 3. 等待一段时间让连接自然结束
             import time
@@ -1518,13 +1605,25 @@ class FileShareService(win32serviceutil.ServiceFramework):
         except Exception as e:
             self.logger.error(f"强制关闭端口时发生错误: {e}")
 
-    def add_firewall_rule(self, port):
+    def add_firewall_rule(self, ports):
+        """为指定端口列表统一添加防火墙放行规则（HTTP/HTTPS 合并为一条，用逗号分隔）
+        ports: 端口列表，如 [12345, 443]；netsh localport 支持逗号分隔多端口
+        """
         try:
-            rule_name = f"File_Share_{port}"
-            self.logger.info(f"自动添加防火墙放行规则:  {rule_name}")
+            # 统一规则名，端口变更时自动替换，避免产生重复规则
+            rule_name = "File_Share_Port"
+            # 去重保序
+            ports = list(dict.fromkeys(int(p) for p in ports if p))
+            ports_str = ",".join(str(p) for p in ports)
+            self.logger.info(f"自动配置防火墙放行规则: {rule_name} 端口 {ports_str}")
+
+            # 1) 清理所有旧的 File_Share_* 规则（含历史遗留/重复项）
+            self._delete_firewall_rules_by_prefix("File_Share_")
+
+            # 2) 新建入站 + 出站放行规则（统一名，指向当前 HTTP/HTTPS 端口）
             commands = [
-                f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=allow protocol=TCP localport={port}',
-                f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=allow protocol=TCP localport={port}',
+                f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=allow protocol=TCP localport={ports_str}',
+                f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=allow protocol=TCP localport={ports_str}',
             ]
 
             for cmd in commands:
@@ -1543,6 +1642,48 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
         except Exception as e:
             self.logger.info(f"自动添加防火墙放行规则{rule_name},错误: {str(e)}")
+
+    def _list_firewall_rules_by_prefix(self, prefix):
+        """枚举名称以 prefix 开头的防火墙规则名（用于清理旧规则）"""
+        try:
+            result = subprocess.run(
+                "netsh advfirewall firewall show rule name=all",
+                shell=True,
+                capture_output=True,
+                text=True,
+                errors="ignore",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            names = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                # 兼容中英文系统："Rule Name:" / "规则名称:"
+                if line.lower().startswith("rule name:") or "规则名称" in line:
+                    if ":" in line:
+                        name = line.split(":", 1)[1].strip()
+                        if name.startswith(prefix):
+                            names.append(name)
+            # 去重（同一条规则名可能出现在多行）
+            return list(dict.fromkeys(names))
+        except Exception as e:
+            self.logger.info(f"枚举防火墙规则失败: {e}")
+            return []
+
+    def _delete_firewall_rules_by_prefix(self, prefix):
+        """删除所有名称以 prefix 开头的防火墙规则"""
+        for name in self._list_firewall_rules_by_prefix(prefix):
+            try:
+                subprocess.run(
+                    f'netsh advfirewall firewall delete rule name="{name}"',
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    errors="ignore",
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                self.logger.info(f"已清理旧防火墙规则: {name}")
+            except Exception as e:
+                self.logger.info(f"删除防火墙规则 {name} 失败: {e}")
 
 
 class FileShareApp:
@@ -1610,6 +1751,11 @@ class FileShareApp:
 
         self.ssl_manager = SSLCertificateManager(config)
 
+        # 初始化 Caddy 管理器（程序目录存在 caddy.exe 时启用自动 HTTPS）
+        from caddy_manager import CaddyManager
+
+        self.caddy_manager = CaddyManager(config)
+
         # 后台服务模式下时钟变量
         self.service_debounce_timer = None
         self.service_monitor_timer = None
@@ -1640,8 +1786,8 @@ class FileShareApp:
         # 7. 开始监听后台服务状态
         self.start_service_monitor()
 
-        # 8. 启动SSL证书监控
-        if config.ssl_enabled:
+        # 8. 启动SSL证书监控（Caddy 模式下由 Caddy 自行申请/续签）
+        if config.ssl_enabled and not self.is_caddy_mode_active():
             self.ssl_manager.start_certificate_monitor()
 
         # 9. 更新SSL状态显示（延迟执行，确保UI已完全初始化）
@@ -1739,7 +1885,7 @@ class FileShareApp:
             text="🔒 SSL设置",
             command=self.open_ssl_settings,
             style="secondary.TButton",
-            width=10,
+            width=20,
         )
         self.ssl_settings_btn.pack(side=LEFT, padx=(0, 10))
 
@@ -1963,7 +2109,7 @@ class FileShareApp:
 
         # 上传并发数设置
         upload_frame = ttk.Frame(log_switch_frame)
-        upload_frame.pack(side=LEFT, padx=15)
+        upload_frame.pack(side=LEFT, padx=2)
         ttk.Label(upload_frame, text="上传并发:").pack(side=tk.LEFT)
         ttk.Spinbox(
             upload_frame,
@@ -1979,7 +2125,7 @@ class FileShareApp:
 
         # 分片大小设置（MB）
         chunk_frame = ttk.Frame(log_switch_frame)
-        chunk_frame.pack(side=LEFT, padx=15)
+        chunk_frame.pack(side=LEFT, padx=2)
         ttk.Label(chunk_frame, text="分片大小(MB):").pack(side=tk.LEFT)
         ttk.Spinbox(
             chunk_frame,
@@ -2334,8 +2480,8 @@ class FileShareApp:
                 self.log_area.insert(END, "SSL设置已更新\n")
                 self.log_area.see(END)
 
-                # 如果启用了SSL，启动证书监控
-                if config.ssl_enabled:
+                # Caddy 模式由 Caddy 自行申请/续签证书，不启用 ssl_manager 监控
+                if config.ssl_enabled and not self.is_caddy_mode_active():
                     self.ssl_manager.start_certificate_monitor()
                 else:
                     self.ssl_manager.stop_certificate_monitor()
@@ -2358,7 +2504,17 @@ class FileShareApp:
         try:
             if hasattr(self, "ssl_settings_btn"):
                 if config.ssl_enabled:
-                    if self.ssl_manager.has_valid_certificate():
+                    if self.is_caddy_mode_active():
+                        # Caddy 反代模式
+                        if self.caddy_manager.is_running():
+                            self.ssl_settings_btn.configure(
+                                text="🔒 SSL已启用(Caddy)", style="success.TButton"
+                            )
+                        else:
+                            self.ssl_settings_btn.configure(
+                                text="🔒 SSL待启动(Caddy)", style="warning.TButton"
+                            )
+                    elif self.ssl_manager.has_valid_certificate():
                         self.ssl_settings_btn.configure(
                             text="🔒 SSL已启用", style="success.TButton"
                         )
@@ -2787,6 +2943,17 @@ class FileShareApp:
                 self.service_var.set(True)
                 tkmessagebox.showerror("错误", f"卸载服务失败: {str(e)}")
 
+    def is_caddy_mode_active(self):
+        """判断是否使用 Caddy 反向代理自动 HTTPS（SSL启用 + Caddy启用 + caddy.exe存在）"""
+        try:
+            return bool(
+                config.ssl_enabled
+                and config.caddy_enabled
+                and self.caddy_manager.caddy_available()
+            )
+        except Exception:
+            return False
+
     def toggle_server_type(self):
         config.use_waitress = self.server_type.get()
 
@@ -2874,6 +3041,23 @@ class FileShareApp:
 
                 def run_server():
                     try:
+                        # 统一启动 Caddy 反向代理（Cheroot/Werkzeug 两种服务器均适用）
+                        if self.is_caddy_mode_active():
+                            if self.caddy_manager.start():
+                                self.root.after(
+                                    0,
+                                    lambda: self.log_area.insert(
+                                        END,
+                                        f"✓ Caddy 反代已启动: "
+                                        f"https://{config.ssl_domain}:{config.ssl_port}\n",
+                                    ),
+                                )
+                                self.root.after(0, lambda: self.log_area.see(END))
+                            else:
+                                self.logger.error(
+                                    "Caddy 反代启动失败，请检查配置和日志"
+                                )
+
                         if config.use_waitress:
                             # 使用Cheroot替代Waitress
                             self.server_running = True
@@ -2917,7 +3101,12 @@ class FileShareApp:
                             self.ssl_server_ipv6 = None
 
                             if config.ssl_enabled:
-                                if self.ssl_manager.has_valid_certificate():
+                                if self.is_caddy_mode_active():
+                                    # Caddy 反代模式：HTTPS 已由 run_server 顶部的 Caddy 接管
+                                    self.logger.info(
+                                        f"Caddy 反代模式：HTTPS 端口 {config.ssl_port} 由 Caddy 接管"
+                                    )
+                                elif self.ssl_manager.has_valid_certificate():
                                     cert_path = self.ssl_manager.get_cert_file_path()
                                     key_path = self.ssl_manager.get_key_file_path()
                                     if cert_path and key_path:
@@ -3114,6 +3303,8 @@ class FileShareApp:
                     self.log_area.insert(END, "SSL服务已启用，详细状态请查看上方日志\n")
                 else:
                     self.log_area.insert(END, "仅HTTP服务已启动\n")
+                # 启动完成后延迟刷新 SSL 按钮状态（等待 Caddy 绑定端口）
+                self.root.after(3000, self.update_ssl_status)
                 if not self.page_btn.winfo_ismapped():
                     self.page_btn.pack(side=LEFT, pady=10, padx=(0, 10))
                 if config.auto_cleanup and not is_cleanup_running():
@@ -3129,6 +3320,11 @@ class FileShareApp:
                         try:
                             self.log_area.insert(END, "正在停止服务...\n")
                             self.log_area.see(END)
+
+                            # 停止 Caddy 反向代理（如有）
+                            if self.is_caddy_mode_active() or self.caddy_manager.is_running():
+                                if self.caddy_manager.stop():
+                                    self.log_area.insert(END, "Caddy 反代已停止\n")
 
                             if config.use_waitress:
                                 # Mark server as stopped
@@ -3204,6 +3400,7 @@ class FileShareApp:
                                 )
                                 self.switch_server_type_ui(False)
                                 self.log_area.insert(END, "服务已停止✓\n")
+                                self.root.after(100, self.update_ssl_status)
                                 self.page_btn.pack_forget()
                             else:
                                 # Werkzeug服务器关闭逻辑
@@ -3224,6 +3421,8 @@ class FileShareApp:
                                         self.switch_server_type_ui(False)
                                         self.log_area.insert(END, "服务已完全停止✓\n")
                                         self.log_area.see(END)
+                                        # 后台线程调用 root.after 安全刷新
+                                        self.root.after(100, self.update_ssl_status)
                                         self.page_btn.pack_forget()
                                     except Exception as e:
                                         self.log_area.insert(
