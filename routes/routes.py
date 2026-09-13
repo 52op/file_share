@@ -902,6 +902,70 @@ def search_files(alias):
     })
 
 
+@flask_app.route('/api/readme/<path:alias>')
+@check_auth_timestamp
+def readme_files_api(alias):
+    """读取当前目录下文件名包含 readme 的 .md/.txt 文档内容（供文件列表下方信息区展示）"""
+    dir_obj = get_dir_obj(alias)
+    if not dir_obj:
+        return jsonify({'error': 'Directory not found'}), 404
+
+    # 校验访问权限（目录独立密码或全局密码兜底）
+    access_resp = require_dir_access(dir_obj, base_dir=alias, is_api=True)
+    if access_resp:
+        return access_resp
+
+    sub_path = (request.args.get('path', '') or '').strip().strip('/')
+    try:
+        if sub_path:
+            actual_dir = safe_join_path(dir_obj.path, *sub_path.split('/'))
+        else:
+            actual_dir = dir_obj.path
+        if not os.path.isdir(actual_dir):
+            return jsonify({'error': '目录不存在'}), 404
+    except ValueError:
+        return jsonify({'error': '非法的目录路径'}), 400
+
+    max_size = 512 * 1024  # 单个文档最多读取 512KB，防止超大文件拖垮页面
+
+    def _decode_text(raw):
+        for enc in ('utf-8', 'gbk', 'gb2312'):
+            try:
+                return raw.decode(enc)
+            except (UnicodeDecodeError, ValueError):
+                continue
+        return raw.decode('utf-8', errors='replace')
+
+    results = []
+    try:
+        for name in sorted(os.listdir(actual_dir)):
+            lower_name = name.lower()
+            if 'readme' not in lower_name:
+                continue
+            ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+            if ext not in ('md', 'txt'):
+                continue
+            full_path = os.path.join(actual_dir, name)
+            if not os.path.isfile(full_path):
+                continue
+            try:
+                with open(full_path, 'rb') as f:
+                    raw = f.read(max_size + 1)
+                truncated = len(raw) > max_size
+                results.append({
+                    'name': name,
+                    'ext': ext,
+                    'content': _decode_text(raw[:max_size]),
+                    'truncated': truncated
+                })
+            except OSError:
+                continue
+    except OSError:
+        return jsonify({'error': '读取目录失败'}), 500
+
+    return jsonify({'results': results, 'path': sub_path})
+
+
 @flask_app.route('/preview/<path:filepath>')
 @check_auth_timestamp
 def preview_file(filepath):
@@ -1024,9 +1088,9 @@ def batch_download():
 
 
 @flask_app.route('/api/save-file/<path:filepath>', methods=['POST'])
+@check_directory_admin_permission
 def save_file(filepath):
-    if not session.get('admin'):
-        return jsonify({'error': '未授权访问'}), 403
+    # 权限检查已由 check_directory_admin_permission 处理（超级管理员/目录管理员）
 
     # 验证和获取文件路径
     result = validate_file_path(filepath)
@@ -1271,6 +1335,39 @@ def validate_folder_name(name):
     return None
 
 
+def validate_file_name(name):
+    """验证文件名（新建文本文件用），与文件夹校验规则一致并兼容扩展名"""
+    if not name.strip():
+        return "文件名不能为空"
+
+    # 包含#号等URL敏感字符的完整检查
+    invalid_chars = r'[<>:"|?*\\/#%&{}$!\'@+`=]'
+    if re.search(invalid_chars, name):
+        return "文件名不能包含以下字符: < > : \" | ? * \\ / # % & { } $ ! ' @ + ` ="
+
+    # 去掉最后一个扩展名后检查系统保留名称（Windows 下 CON.txt 同样为保留名）
+    stem = name
+    if '.' in name:
+        stem = name.rsplit('.', 1)[0]
+    reserved_names = ['CON', 'PRN', 'AUX', 'NUL'] + [f'COM{i}' for i in range(1, 10)] + [f'LPT{i}' for i in range(1, 10)]
+    if stem.upper() in reserved_names:
+        return "不能使用系统保留名称"
+
+    # 检查长度
+    if len(name) > 255:
+        return "文件名过长（最多255个字符）"
+
+    # 检查是否以点开头
+    if name.startswith('.'):
+        return "文件名不能以点开头"
+
+    # 检查是否以点或空格结尾
+    if name.endswith('.') or name.endswith(' '):
+        return "文件名不能以点或空格结尾"
+
+    return None
+
+
 @flask_app.route('/api/mkdir/<path:alias>', methods=['POST'])
 @check_directory_admin_permission
 def make_directory(alias):
@@ -1311,6 +1408,70 @@ def make_directory(alias):
     # 记录新建文件夹操作
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 在 {check_dir} 新建文件夹: {folder_name}")
+    return "Success", 200
+
+
+@flask_app.route('/api/create-file/<path:alias>', methods=['POST'])
+@check_directory_admin_permission
+def create_text_file(alias):
+    """新建文本文件（支持初始内容）"""
+    # 权限检查已由装饰器处理
+
+    current_path = request.form.get('current_path')
+    file_name = request.form.get('name')
+    content = request.form.get('content', '') or ''
+
+    if not current_path or not file_name:
+        return "Missing required parameters", 400
+
+    current_path = urllib.parse.unquote(current_path)
+    file_name = urllib.parse.unquote(file_name)
+
+    # 省略扩展名时默认补 .txt
+    if '.' not in file_name:
+        file_name += '.txt'
+
+    # 验证文件名
+    validation_error = validate_file_name(file_name)
+    if validation_error:
+        return validation_error, 400
+
+    dir_obj = get_dir_obj(alias)
+    if not dir_obj:
+        return "Directory not found", 404
+
+    # 从URL路径提取实际目录路径
+    path_parts = current_path.strip('/').split('/')
+    try:
+        if len(path_parts) > 1:
+            # 移除 'dir' 前缀并构建目标路径
+            sub_path = '/'.join(path_parts[2:])
+            target_file = safe_join_path(dir_obj.path, sub_path, file_name)
+            check_dir = safe_join_path(dir_obj.path, sub_path)
+        else:
+            target_file = safe_join_path(dir_obj.path, file_name)
+            check_dir = dir_obj.path
+    except ValueError:
+        return "非法的目标路径", 400
+
+    # 验证目标路径是否存在
+    if not os.path.exists(check_dir):
+        return "Target directory not found", 404
+
+    # 同名文件或文件夹冲突检查
+    if os.path.exists(target_file):
+        return "同名文件或文件夹已存在", 400
+
+    try:
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        with open(target_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except OSError as e:
+        return f"创建文件失败: {e}", 500
+
+    # 记录新建文件操作
+    client_info = get_client_info()
+    flask_app.logger.info(f"{client_info} 在 {check_dir} 新建文件: {file_name}")
     return "Success", 200
 
 

@@ -50,6 +50,8 @@
     <script src="/static/ace/ext-language_tools.js"></script>
     <link href="/static/workspace/workspace.css" rel="stylesheet">
     <script src="/static/workspace/workspace.js"></script>
+    <script src="/static/vendor/marked.min.js"></script>
+    <script src="/static/vendor/dompurify.min.js"></script>
 
     <style>
         .vh-75 {
@@ -136,6 +138,52 @@
             color: #0d6efd;
             pointer-events: none;
         }
+
+        /* 目录 readme 信息区样式 */
+        .readme-md-content {
+            line-height: 1.7;
+            font-size: 0.95rem;
+            overflow-wrap: break-word;
+        }
+        .readme-md-content pre {
+            background: #f6f8fa;
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        .readme-md-content code {
+            background: #f0f0f0;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        .readme-md-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .readme-md-content img {
+            max-width: 100%;
+            height: auto;
+        }
+        .readme-md-content table {
+            border-collapse: collapse;
+        }
+        .readme-md-content table th,
+        .readme-md-content table td {
+            border: 1px solid #dee2e6;
+            padding: 6px 10px;
+        }
+        .readme-md-content blockquote {
+            border-left: 4px solid #dee2e6;
+            margin: 0;
+            padding-left: 12px;
+            color: #6c757d;
+        }
+        .readme-txt-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.9rem;
+        }
     </style>
 
 
@@ -187,6 +235,9 @@
                 <button class="btn btn-success" onclick="showNewFolderDialog()">
                     <i class="bi bi-folder-plus me-2"></i>新建文件夹
                 </button>
+                <button class="btn btn-outline-success" onclick="showNewTextFileDialog()">
+                    <i class="bi bi-file-earmark-plus me-2"></i>新建文本
+                </button>
                 <a class="btn btn-secondary ms-auto" href="/share-manager/{{ dir_obj.alias }}" target="_blank">
                     <i class="bi bi-share me-2"></i>私有分享
                 </a>
@@ -201,6 +252,9 @@
                 </button>
                 <button class="btn btn-success" onclick="showNewFolderDialog()">
                     <i class="bi bi-folder-plus me-2"></i>新建文件夹
+                </button>
+                <button class="btn btn-outline-success" onclick="showNewTextFileDialog()">
+                    <i class="bi bi-file-earmark-plus me-2"></i>新建文本
                 </button>
                 <span class="badge bg-warning text-dark ms-auto align-self-center">
                     <i class="bi bi-shield-check me-1"></i>目录管理员
@@ -338,6 +392,20 @@
                     </div>
                 </div>
             {% endfor %}
+        </div>
+
+        <!-- 目录 readme 信息区（自动读取该目录下含 readme 关键字的 .md/.txt 文档） -->
+        <div id="readmeArea" class="mt-3 d-none">
+            <div class="card">
+                <div class="card-header d-flex align-items-center gap-2 py-2">
+                    <i class="bi bi-journal-text"></i>
+                    <span class="fw-semibold">目录说明</span>
+                </div>
+                <div class="card-body p-0">
+                    <ul class="nav nav-tabs px-2 pt-2" id="readmeTabs" role="tablist"></ul>
+                    <div class="tab-content p-3" id="readmeTabContent"></div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -592,6 +660,40 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" onclick="createFolder()">创建</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建文本文件对话框 -->
+    <div class="modal fade" id="newFileDialog" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">新建文本文件</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <input type="text" class="form-control" id="fileName" placeholder="文件名（如 notes.md）" oninput="validateFileNameInput()">
+                        <div id="fileNameFeedback" class="form-text"></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">初始内容（可选）</label>
+                        <textarea class="form-control" id="fileContent" rows="8" placeholder="在此输入文本内容..."></textarea>
+                    </div>
+                    <div class="alert alert-info small mb-0">
+                        <strong>命名规则：</strong><br>
+                        • 省略扩展名时自动补 .txt<br>
+                        • 不能包含特殊字符: &lt; &gt; : " | ? * \ / # % &amp; { } $ ! ' @ + ` =<br>
+                        • 不能使用系统保留名称（如CON、PRN等）<br>
+                        • 不能以点开头或以点/空格结尾<br>
+                        • 最多255个字符
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createTextFile()">创建</button>
                 </div>
             </div>
         </div>
@@ -2601,6 +2703,121 @@
             }
         }
 
+        // ---------- 新建文本文件 ----------
+        function showNewTextFileDialog() {
+            document.getElementById('fileName').value = '';
+            document.getElementById('fileContent').value = '';
+            document.getElementById('fileNameFeedback').textContent = '';
+            document.getElementById('fileNameFeedback').className = 'form-text';
+            const input = document.getElementById('fileName');
+            input.className = 'form-control';
+            const createBtn = document.querySelector('#newFileDialog .btn-primary');
+            if (createBtn) createBtn.disabled = false;
+            new bootstrap.Modal(document.getElementById('newFileDialog')).show();
+        }
+
+        // 文件名验证（省略扩展名时按 .txt 处理）
+        function validateFileName(name) {
+            if (!name.trim()) return '文件名不能为空';
+            const invalidChars = /[<>:"|?*\\\/#%&{}$!'@+`=]/g;
+            const reservedNames = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'];
+            if (invalidChars.test(name)) {
+                return '文件名不能包含以下字符: < > : " | ? * \\ / # % & { } $ ! \' @ + ` =';
+            }
+            let stem = name;
+            if (name.includes('.')) stem = name.substring(0, name.lastIndexOf('.'));
+            if (reservedNames.includes(stem.toUpperCase())) return '不能使用系统保留名称';
+            if (name.length > 255) return '文件名过长（最多255个字符）';
+            if (name.startsWith('.')) return '文件名不能以点开头';
+            if (name.endsWith('.') || name.endsWith(' ')) return '文件名不能以点或空格结尾';
+            return null;
+        }
+
+        function suggestFileName(name) {
+            return name.replace(/[<>:"|?*\\\/#%&{}$!'@+`=]/g, '_')
+                      .replace(/^\.+/, '')
+                      .replace(/[. ]+$/, '')
+                      .substring(0, 255);
+        }
+
+        function applyFileNameSuggestion(suggested) {
+            document.getElementById('fileName').value = suggested;
+            validateFileNameInput();
+        }
+
+        function validateFileNameInput() {
+            const input = document.getElementById('fileName');
+            const feedback = document.getElementById('fileNameFeedback');
+            const createBtn = document.querySelector('#newFileDialog .btn-primary');
+
+            const name = input.value.trim();
+            const error = validateFileName(name);
+
+            if (!name) {
+                feedback.textContent = '';
+                feedback.className = 'form-text';
+                input.className = 'form-control';
+                if (createBtn) createBtn.disabled = false;
+            } else if (error) {
+                feedback.textContent = error;
+                feedback.className = 'form-text text-danger';
+                input.className = 'form-control is-invalid';
+                if (createBtn) createBtn.disabled = true;
+
+                // 显示建议名称
+                const suggested = suggestFileName(name);
+                if (suggested && suggested !== name) {
+                    feedback.innerHTML = `${error}<br><small class="text-muted">建议: ${suggested} <a href="#" onclick="applyFileNameSuggestion('${suggested}'); return false;" class="text-primary">使用建议</a></small>`;
+                }
+            } else {
+                feedback.innerHTML = '<i class="bi bi-check-lg me-1"></i>文件名有效';
+                feedback.className = 'form-text text-success';
+                input.className = 'form-control is-valid';
+                if (createBtn) createBtn.disabled = false;
+            }
+        }
+
+        async function createTextFile() {
+            const fileNameInput = document.getElementById('fileName');
+            const fileName = fileNameInput.value.trim();
+            if (!fileName) return;
+
+            const error = validateFileName(fileName);
+            if (error) {
+                const suggested = suggestFileName(fileName);
+                if (confirm(`${error}\n\n建议使用: ${suggested}\n\n是否使用建议的名称？`)) {
+                    fileNameInput.value = suggested;
+                    return;
+                }
+                return;
+            }
+
+            const content = document.getElementById('fileContent').value;
+            const currentPath = window.location.pathname;
+            const formData = new FormData();
+            formData.append('name', fileName);
+            formData.append('current_path', currentPath);
+            formData.append('content', content);
+
+            try {
+                const response = await uploadRequest(`/api/create-file/{{ dir_obj.alias }}`, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    body: formData
+                });
+                if (response.ok) {
+                    location.reload();
+                } else {
+                    const errorText = await response.text();
+                    alert('创建文件失败: ' + errorText);
+                }
+            } catch (error) {
+                console.error('Error creating file:', error);
+                alert('创建文件时发生错误');
+            }
+        }
+        // ---------- 新建文本文件 end ----------
+
         function renameItem(oldName, isDir) {
             const itemType = isDir ? '文件夹' : '文件';
             let newName = prompt(`请输入新的${itemType}名称:`, oldName);
@@ -2982,17 +3199,29 @@
                                 const icon = item.is_dir ? 'folder' : getFileIcon(item.name);
                                 // 下载等接口使用去掉 alias 前缀的相对路径
                                 const relPath = stripAlias(item.path);
+                                // 所在文件夹：相对路径去掉最后一个层级，空串表示根目录
+                                const parentRel = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
+                                const parentLabel = parentRel || '/';
+                                const parentUrl = parentRel ? `/dir/${currentAlias}/${parentRel}` : `/dir/${currentAlias}`;
 
                                 listItem.innerHTML = `
     <div class="d-flex align-items-center">
         <input type="checkbox" class="form-check-input me-2 item-checkbox"
                data-path="${item.path}" data-name="${item.name}" data-is-dir="${item.is_dir}">
-        <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
-           class="item-link"
-           ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${relPath}'); return false;"` : ''}>
-            <i class="bi bi-${icon} me-2"></i>
-            ${item.name}
-        </a>
+        <div class="flex-grow-1" style="min-width:0;">
+            <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
+               class="item-link"
+               ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${relPath}'); return false;"` : ''}>
+                <i class="bi bi-${icon} me-2"></i>
+                ${item.name}
+            </a>
+            <div class="small text-muted" style="margin-left: 1.7rem;">
+                位于：${parentLabel}
+                <a href="${parentUrl}" title="打开所在目录" class="text-decoration-none ms-1">
+                    <i class="bi bi-folder2-open"></i>
+                </a>
+            </div>
+        </div>
     </div>
     <div class="d-flex align-items-center">
         <div class="item-actions me-3">
@@ -3002,7 +3231,7 @@
             </button>
             ${!item.is_dir ? `
                 <button class="btn btn-sm btn-outline-info"
-                        onclick="${hasAdminPermission ? 'editFile' : 'previewFile'}('${item.name}', '${relPath}')"
+                        onclick="${hasAdminPermission ? 'editFile' : 'previewFile'}('${item.name}', '${item.path}')"
                         title="查看">
                     <i class="bi bi-eye"></i>
                 </button>
@@ -3061,6 +3290,9 @@
                     performSearch();
                 }
             });
+
+            // 加载当前目录的 readme 文档到文件列表下方信息区
+            loadReadmeDocs();
             
             // 页面加载时从服务端恢复中断的上传状态
             // 支持从上传中心「去续传」跳转：?resume=<session_id> 时立即显示该会话恢复条
@@ -3077,6 +3309,83 @@
                 }
             })();
         });
+        /* ---------- 目录 readme 信息区 ---------- */
+        async function loadReadmeDocs() {
+            const currentAlias = '{{ dir_obj.alias }}';
+            let rel = '';
+            if (window.location.pathname.startsWith('/dir/')) {
+                const parts = window.location.pathname.slice(5).split('/');
+                parts.shift(); // 去掉 alias 前缀
+                rel = parts.join('/');
+            }
+            try {
+                const resp = await fetch(`/api/readme/${encodeURIComponent(currentAlias)}?path=${encodeURIComponent(rel)}`, { credentials: 'same-origin' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const results = data && Array.isArray(data.results) ? data.results : [];
+                renderReadmeArea(results);
+            } catch (e) {
+                console.warn('加载目录说明失败:', e);
+            }
+        }
+
+        function escapeHtmlText(str) {
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function renderReadmeArea(results) {
+            const area = document.getElementById('readmeArea');
+            if (!area || !results.length) return;
+            const tabs = document.getElementById('readmeTabs');
+            const content = document.getElementById('readmeTabContent');
+            if (!tabs || !content) return;
+
+            tabs.innerHTML = '';
+            content.innerHTML = '';
+
+            results.forEach((item, index) => {
+                const tab = document.createElement('li');
+                tab.className = 'nav-item';
+                tab.innerHTML = `<button class="nav-link ${index === 0 ? 'active' : ''}" data-bs-toggle="tab" data-bs-target="#readmeTab${index}" type="button" role="tab" aria-controls="readmeTab${index}">${escapeHtmlText(item.name)}</button>`;
+                tabs.appendChild(tab);
+
+                const pane = document.createElement('div');
+                pane.className = `tab-pane fade ${index === 0 ? 'show active' : ''}`;
+                pane.id = `readmeTab${index}`;
+                pane.setAttribute('role', 'tabpanel');
+
+                if (item.ext === 'md') {
+                    const mdDiv = document.createElement('div');
+                    mdDiv.className = 'readme-md-content';
+                    if (window.marked && window.DOMPurify) {
+                        marked.setOptions({ gfm: true, breaks: true });
+                        const html = marked.parse(item.content || '');
+                        mdDiv.innerHTML = DOMPurify.sanitize(html);
+                    } else {
+                        mdDiv.textContent = item.content || '';
+                    }
+                    pane.appendChild(mdDiv);
+                } else {
+                    const pre = document.createElement('pre');
+                    pre.className = 'readme-txt-content mb-0';
+                    pre.textContent = item.content || '';
+                    pane.appendChild(pre);
+                }
+
+                if (item.truncated) {
+                    const note = document.createElement('div');
+                    note.className = 'text-muted small mt-2';
+                    note.textContent = '内容过长，仅显示前 512KB，请下载查看完整内容';
+                    pane.appendChild(note);
+                }
+
+                content.appendChild(pane);
+            });
+
+            area.classList.remove('d-none');
+        }
+        /* ---------- 目录 readme 信息区 end ---------- */
+
         /* 移动文件逻辑 */
         // 显示移动对话框
         function showMoveDialog(singleItem = null) {

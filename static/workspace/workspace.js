@@ -48,46 +48,53 @@ class WorkspaceManager {
         this.initDraggable();
         this.initResizable();
         this.registerShortcuts();
+        this.watchWindowResize();
     }
 
     initDraggable() {
         const header = this.workspace.querySelector('.workspace-header');
         let isDragging = false;
+        let pointerId = null;
         let startX, startY, startLeft, startTop;
 
-        header.onmousedown = (e) => {
+        const onPointerMove = (e) => {
+            if (!isDragging || e.pointerId !== pointerId) return;
+            e.preventDefault();
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            this.workspace.style.left = `${startLeft + dx}px`;
+            this.workspace.style.top = `${startTop + dy}px`;
+        };
+
+        const onPointerUp = (e) => {
+            if (e.pointerId !== pointerId) return;
+            isDragging = false;
+            pointerId = null;
+            if (header.releasePointerCapture) header.releasePointerCapture(e.pointerId);
+            header.removeEventListener('pointermove', onPointerMove);
+            header.removeEventListener('pointerup', onPointerUp);
+            header.removeEventListener('pointercancel', onPointerUp);
+            this.clampToViewport();
+        };
+
+        header.addEventListener('pointerdown', (e) => {
             if (e.target.closest('.workspace-controls') || e.target.closest('.tab-close')) {
                 return;
             }
+            // 移动端全屏显示，禁用手势拖动避免劫持页面滚动
+            if (window.innerWidth <= 768) return;
 
             isDragging = true;
+            pointerId = e.pointerId;
             startX = e.clientX;
             startY = e.clientY;
             startLeft = this.workspace.offsetLeft;
             startTop = this.workspace.offsetTop;
-
-            const onMouseMove = (e) => {
-                if (!isDragging) return;
-
-                const dx = e.clientX - startX;
-                const dy = e.clientY - startY;
-
-                const newLeft = startLeft + dx;
-                const newTop = startTop + dy;
-
-                this.workspace.style.left = `${newLeft}px`;
-                this.workspace.style.top = `${newTop}px`;
-            };
-
-            const onMouseUp = () => {
-                isDragging = false;
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', onMouseUp);
-            };
-
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
-        };
+            if (header.setPointerCapture) header.setPointerCapture(e.pointerId);
+            header.addEventListener('pointermove', onPointerMove, { passive: false });
+            header.addEventListener('pointerup', onPointerUp);
+            header.addEventListener('pointercancel', onPointerUp);
+        });
     }
 
     initResizable() {
@@ -97,16 +104,22 @@ class WorkspaceManager {
             handle.className = `resize-handle resize-${dir}`;
             this.workspace.appendChild(handle);
 
-            handle.onmousedown = (e) => {
+            handle.onpointerdown = (e) => {
+                e.preventDefault();
                 e.stopPropagation();
+                // 移动端全屏显示，不提供拖拽缩放
+                if (window.innerWidth <= 768) return;
+
                 const startX = e.clientX;
                 const startY = e.clientY;
                 const startWidth = this.workspace.offsetWidth;
                 const startHeight = this.workspace.offsetHeight;
                 const startLeft = this.workspace.offsetLeft;
                 const startTop = this.workspace.offsetTop;
+                const pointerId = e.pointerId;
+                if (handle.setPointerCapture) handle.setPointerCapture(pointerId);
 
-                const onMouseMove = (e) => {
+                const onPointerMove = (e) => {
                     const dx = e.clientX - startX;
                     const dy = e.clientY - startY;
 
@@ -125,18 +138,68 @@ class WorkspaceManager {
 
                     if (this.activeTab) {
                         const tab = this.tabs.get(this.activeTab);
-                        tab.editor.resize();
+                        if (tab && tab.editor) tab.editor.resize();
                     }
                 };
 
-                const onMouseUp = () => {
-                    document.removeEventListener('mousemove', onMouseMove);
-                    document.removeEventListener('mouseup', onMouseUp);
+                const onPointerUp = (e) => {
+                    if (handle.releasePointerCapture) handle.releasePointerCapture(e.pointerId);
+                    handle.removeEventListener('pointermove', onPointerMove);
+                    handle.removeEventListener('pointerup', onPointerUp);
+                    handle.removeEventListener('pointercancel', onPointerUp);
+                    this.clampToViewport();
                 };
 
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', onMouseUp);
+                handle.addEventListener('pointermove', onPointerMove, { passive: false });
+                handle.addEventListener('pointerup', onPointerUp);
+                handle.addEventListener('pointercancel', onPointerUp);
             };
+        });
+    }
+
+    // 将工作区尺寸/位置约束在视口内（桌面端；移动端由 CSS 全屏接管）
+    clampToViewport() {
+        if (!this.workspace ||
+            this.workspace.classList.contains('maximized') ||
+            this.workspace.classList.contains('minimized') ||
+            this.workspace.style.display === 'none' ||
+            window.innerWidth <= 768) {
+            return;
+        }
+
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        // 尺寸未就绪时跳过，避免把内联尺寸误写成 0
+        if (this.workspace.offsetWidth === 0 || this.workspace.offsetHeight === 0) {
+            return;
+        }
+
+        let width = this.workspace.offsetWidth;
+        let height = this.workspace.offsetHeight;
+        width = Math.min(width, Math.max(300, vw - 20));
+        height = Math.min(height, Math.max(200, vh - 20));
+        this.workspace.style.width = `${width}px`;
+        this.workspace.style.height = `${height}px`;
+
+        let left = this.workspace.offsetLeft;
+        let top = this.workspace.offsetTop;
+        left = Math.min(Math.max(left, 5), Math.max(5, vw - width - 5));
+        top = Math.min(Math.max(top, 5), Math.max(5, vh - height - 5));
+        this.workspace.style.left = `${left}px`;
+        this.workspace.style.top = `${top}px`;
+
+        if (this.activeTab) {
+            const tab = this.tabs.get(this.activeTab);
+            if (tab && tab.editor) tab.editor.resize();
+        }
+    }
+
+    // 窗口尺寸变化时自适应（桌面端约束视口，移动端由 CSS 全屏接管）
+    watchWindowResize() {
+        window.addEventListener('resize', () => {
+            if (window.innerWidth <= 768) return;
+            this.clampToViewport();
         });
     }
 
@@ -220,6 +283,8 @@ class WorkspaceManager {
                     tab.editor.resize();
                 }
             }
+
+            this.clampToViewport();
         }
     }
 
@@ -238,6 +303,10 @@ class WorkspaceManager {
                 tab.editor.container.style.display = 'block';
                 tab.editor.resize();
             }
+        }
+
+        if (!this.workspace.classList.contains('maximized')) {
+            this.clampToViewport();
         }
     }
 
@@ -282,6 +351,12 @@ class WorkspaceManager {
     openFile(filename, filepath, content, canEdit = false) {
         if (this.isMinimized) {
             this.restore();
+        }
+
+        // 清理历史残留的异常 0 尺寸内联样式（避免打开后宽度被钳制）
+        if (this.workspace.style.width === '0px' || this.workspace.style.height === '0px') {
+            this.workspace.style.width = '';
+            this.workspace.style.height = '';
         }
 
         const id = filepath;
@@ -346,6 +421,7 @@ class WorkspaceManager {
 
         this.activateTab(id);
         this.workspace.style.display = 'flex';
+        this.clampToViewport();
     }
 
     updateSaveButton(id) {

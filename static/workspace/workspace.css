@@ -2,8 +2,8 @@
     position: fixed;
     right: 20px;
     bottom: 20px;
-    width: 800px;
-    height: 600px;
+    width: min(800px, 92vw);
+    height: min(600px, 88vh);
     background: #1e1e1e;
     border: 1px solid #333;
     border-radius: 4px;
@@ -146,6 +146,7 @@
 .workspace-container.minimized {
     width: 200px !important;
     height: 32px !important;
+    min-width: 200px !important;
     min-height: 32px !important;
     overflow: hidden;
 }
@@ -201,5 +202,45 @@
 
 .save-button:hover {
     opacity: 1;
+}
+
+/* 移动端：工作区全屏自适应，隐藏缩放手柄与快捷键提示 */
+@media (max-width: 768px) {
+    .workspace-container {
+        width: 100vw !important;
+        height: 100vh !important;
+        left: 0 !important;
+        top: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+    }
+
+    .workspace-container.minimized {
+        width: 200px !important;
+        height: 32px !important;
+        right: 12px !important;
+        bottom: 12px !important;
+        left: auto !important;
+        top: auto !important;
+        border: 1px solid #333;
+        border-radius: 4px;
+        box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+
+    .workspace-container .resize-handle {
+        display: none;
+    }
+
+    .workspace-container .shortcuts-info {
+        display: none;
+    }
+
+    .workspace-container .save-button {
+        top: 48px;
+        right: 8px;
+    }
 }
 
