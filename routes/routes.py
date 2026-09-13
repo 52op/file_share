@@ -927,7 +927,6 @@ def readme_files_api(alias):
         return jsonify({'error': '非法的目录路径'}), 400
 
     max_size = 512 * 1024  # 单个文档最多读取 512KB，防止超大文件拖垮页面
-    max_depth = 4  # 最大递归深度（1=仅当前目录），防止遍历过深
     max_results = 30  # 最多返回文档数量
 
     def _decode_text(raw):
@@ -938,44 +937,33 @@ def readme_files_api(alias):
                 continue
         return raw.decode('utf-8', errors='replace')
 
+    # 仅扫描当前目录（不递归），进入子目录时由前端请求对应 path 显示该子目录自己的 readme
     results = []
     try:
-        for root, dirs, files in os.walk(actual_dir):
-            # 深度限制：达到上限后不再深入子目录
-            rel_root = os.path.relpath(root, actual_dir)
-            if rel_root != '.':
-                depth = rel_root.count(os.sep) + 1
-                if depth >= max_depth:
-                    dirs[:] = []
-
-            # 收集当前层（含子目录）文件名包含 readme 的 .md/.txt 文档
-            for file_name in files:
-                if len(results) >= max_results:
-                    break
-                lower_name = file_name.lower()
-                if 'readme' not in lower_name:
-                    continue
-                ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
-                if ext not in ('md', 'txt'):
-                    continue
-                full_path = os.path.join(root, file_name)
-                if not os.path.isfile(full_path):
-                    continue
-                try:
-                    with open(full_path, 'rb') as f:
-                        raw = f.read(max_size + 1)
-                    truncated = len(raw) > max_size
-                    rel_path = file_name if rel_root == '.' else os.path.join(rel_root, file_name).replace('\\', '/')
-                    results.append({
-                        'name': rel_path,
-                        'ext': ext,
-                        'content': _decode_text(raw[:max_size]),
-                        'truncated': truncated
-                    })
-                except OSError:
-                    continue
+        for name in sorted(os.listdir(actual_dir)):
             if len(results) >= max_results:
                 break
+            lower_name = name.lower()
+            if 'readme' not in lower_name:
+                continue
+            ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+            if ext not in ('md', 'txt'):
+                continue
+            full_path = os.path.join(actual_dir, name)
+            if not os.path.isfile(full_path):
+                continue
+            try:
+                with open(full_path, 'rb') as f:
+                    raw = f.read(max_size + 1)
+                truncated = len(raw) > max_size
+                results.append({
+                    'name': name,
+                    'ext': ext,
+                    'content': _decode_text(raw[:max_size]),
+                    'truncated': truncated
+                })
+            except OSError:
+                continue
     except OSError:
         return jsonify({'error': '读取目录失败'}), 500
 
