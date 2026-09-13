@@ -1432,6 +1432,10 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.server_thread = threading.Thread(target=run_server, daemon=True)
             self.server_thread.start()
 
+            # 尽早报告服务运行状态，避免 SCM 在 ServicesPipeTimeout(默认30秒) 内因启动缓慢终止服务进程。
+            # PyInstaller 单文件版启动时需要解压全部资源，配置加载、防火墙、证书监控等耗时步骤放到 RUNNING 之后执行。
+            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+
             # 添加防火墙规则（HTTP + HTTPS 合并为一条，逗号分隔）
             firewall_ports = [config.port]
             if config.ssl_enabled and config.ssl_port and config.ssl_port != config.port:
@@ -1446,14 +1450,19 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 self.ssl_manager.start_certificate_monitor()
                 self.logger.info("系统服务SSL证书监控已启动")
 
-            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
-
             # 使用 Windows 事件对象等待
             win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
 
         except Exception as e:
             self.logger.error(f"服务错误: {str(e)}")
             self.logger.error(traceback.format_exc())
+            # 同步写入 Windows 事件日志，方便在服务管理器/事件查看器里定位
+            try:
+                servicemanager.LogErrorMsg(
+                    f"FS文件分享服务运行失败: {str(e)}\n{traceback.format_exc()}"
+                )
+            except Exception:
+                pass
             self.ReportServiceStatus(win32service.SERVICE_STOPPED)
 
     def SvcStop(self):
@@ -2994,7 +3003,47 @@ class FileShareApp:
                     self.start_btn.configure(
                         text="正在启动...", style="warning.TButton", state="disabled"
                     )
+
+                    # 启动前检查端口占用，避免服务绑定失败后很快退出
+                    if self.is_port_in_use(runningPort):
+                        self.start_btn.configure(
+                            text="启动后台服务", style="success.TButton", state="normal"
+                        )
+                        tkmessagebox.showwarning(
+                            "端口被占用",
+                            f"端口 {runningPort} 已被占用。\n请先停止占用该端口的进程或程序（如前台运行的本程序/旧服务实例）后再启动后台服务。",
+                        )
+                        return
+
                     win32serviceutil.StartService("FileShareService")
+
+                    # 轮询等待服务进入运行状态（最多35秒，覆盖解压+初始化耗时）
+                    svc_started = False
+                    for _ in range(35):
+                        time.sleep(1)
+                        try:
+                            current_status = win32serviceutil.QueryServiceStatus(
+                                "FileShareService"
+                            )[1]
+                        except Exception:
+                            current_status = None
+                        if current_status == 4:  # SERVICE_RUNNING
+                            svc_started = True
+                            break
+                        if current_status == 1:  # SERVICE_STOPPED（启动失败已退出）
+                            break
+
+                    if not svc_started:
+                        self.start_btn.configure(
+                            text="启动后台服务", style="success.TButton", state="normal"
+                        )
+                        self.back_server_running = False
+                        tkmessagebox.showerror(
+                            "错误",
+                            "服务启动失败或启动后很快退出。\n请查看程序目录 logs/service_*.log 日志文件，或打开事件查看器-应用程序日志查找「FS文件分享服务」错误记录。",
+                        )
+                        return
+
                     self.start_btn.configure(
                         text="停止后台服务", style="danger.TButton", state="normal"
                     )
@@ -3005,13 +3054,49 @@ class FileShareApp:
                     if not self.page_btn.winfo_ismapped():
                         self.page_btn.pack(side=LEFT, pady=10, padx=(0, 10))
                 except Exception as e:
+                    self.start_btn.configure(
+                        text="启动后台服务", style="success.TButton", state="normal"
+                    )
                     tkmessagebox.showerror("错误", f"启动服务失败: {str(e)}")
             else:
                 try:
                     self.start_btn.configure(
                         text="正在停止...", style="warning.TButton", state="disabled"
                     )
+
+                    # 停止前确认服务确实在运行，避免服务已退出时 StopService 报 1062"服务尚未启动"
+                    try:
+                        current_status = win32serviceutil.QueryServiceStatus(
+                            "FileShareService"
+                        )[1]
+                    except Exception:
+                        current_status = None
+                    if current_status not in (2, 3, 4):  # START_PENDING/STOP_PENDING/RUNNING
+                        self.start_btn.configure(
+                            text="启动后台服务", style="success.TButton", state="normal"
+                        )
+                        self.back_server_running = False
+                        self.page_btn.pack_forget()
+                        tkmessagebox.showinfo(
+                            "服务状态",
+                            "服务当前未在运行（可能已退出或启动失败），状态已自动刷新。\n请查看 logs/service_*.log 日志确认原因。",
+                        )
+                        return
+
                     win32serviceutil.StopService("FileShareService")
+
+                    # 轮询等待服务完全停止
+                    for _ in range(15):
+                        time.sleep(1)
+                        try:
+                            stopped_status = win32serviceutil.QueryServiceStatus(
+                                "FileShareService"
+                            )[1]
+                        except Exception:
+                            stopped_status = 1
+                        if stopped_status == 1:  # SERVICE_STOPPED
+                            break
+
                     self.start_btn.configure(
                         text="启动后台服务", style="success.TButton", state="normal"
                     )
@@ -3019,7 +3104,25 @@ class FileShareApp:
                     flask_app.logger.info("后台服务已成功停止")
                     self.page_btn.pack_forget()
                 except Exception as e:
-                    tkmessagebox.showerror("错误", f"停止服务失败: {str(e)}")
+                    # 停止过程中服务可能刚好自行退出：若查询到已停止则按成功处理，避免误报 1062
+                    try:
+                        final_status = win32serviceutil.QueryServiceStatus(
+                            "FileShareService"
+                        )[1]
+                    except Exception:
+                        final_status = None
+                    if final_status == 1:  # SERVICE_STOPPED
+                        self.start_btn.configure(
+                            text="启动后台服务", style="success.TButton", state="normal"
+                        )
+                        self.back_server_running = False
+                        self.page_btn.pack_forget()
+                        flask_app.logger.info("后台服务已停止（状态已刷新）")
+                    else:
+                        self.start_btn.configure(
+                            text="停止后台服务", style="danger.TButton", state="normal"
+                        )
+                        tkmessagebox.showerror("错误", f"停止服务失败: {str(e)}")
         else:
             if not self.server_running:
                 self.save_config()
@@ -3589,6 +3692,32 @@ class FileShareApp:
             pythonClassString="main.FileShareService",  # 添加类的完整路径
             description="提供文件共享Web服务 AQ contact: letvar@qq.com",
         )
+
+        # 增大 SCM 服务启动超时（系统默认 30000ms）。
+        # PyInstaller 单文件版服务启动时要先解压全部资源再初始化，解压较慢时可能超过
+        # 30 秒被服务控制管理器强制终止，导致"服务启动后立即停止/停止报1062"。
+        try:
+            reg_result = subprocess.run(
+                [
+                    "reg",
+                    "add",
+                    "HKLM\\SYSTEM\\CurrentControlSet\\Control",
+                    "/v",
+                    "ServicesPipeTimeout",
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    "60000",
+                    "/f",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if reg_result.returncode == 0:
+                self.logger.info("已设置服务启动超时(ServicesPipeTimeout)为60秒")
+        except Exception as e:
+            self.logger.warning(f"设置 ServicesPipeTimeout 失败: {e}")
 
     def force_delete_service(self):
         """强制删除服务的终极方案"""
