@@ -3366,10 +3366,17 @@
         async function loadReadmeDocs() {
             const currentAlias = '{{ dir_obj.alias }}';
             let rel = '';
-            if (window.location.pathname.startsWith('/dir/')) {
-                const parts = window.location.pathname.slice(5).split('/');
-                parts.shift(); // 去掉 alias 前缀
-                rel = parts.join('/');
+            // location.pathname 对非 ASCII 路径返回百分号编码形式，需先解码（如 %E8%A3%85 ... -> 装机工具）
+            // 否则再 encodeURIComponent 会双重编码，后端解一次码后仍是编码串导致目录 404
+            try {
+                const decodedPath = decodeURIComponent(window.location.pathname);
+                if (decodedPath.startsWith('/dir/')) {
+                    const parts = decodedPath.slice(5).split('/');
+                    parts.shift(); // 去掉 alias 前缀
+                    rel = parts.join('/');
+                }
+            } catch (e) {
+                rel = '';
             }
             try {
                 const resp = await fetch(`/api/readme/${encodeURIComponent(currentAlias)}?path=${encodeURIComponent(rel)}`, { credentials: 'same-origin' });
