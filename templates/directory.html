@@ -184,6 +184,42 @@
             word-break: break-word;
             font-size: 0.9rem;
         }
+
+        /* 搜索结果显示：位置分组头 + 关键字高亮 */
+        .search-group-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            margin-top: 8px;
+            background: var(--bs-tertiary-bg, #e9ecef);
+            border-radius: 4px;
+            font-size: 12.5px;
+            color: #6c757d;
+        }
+        .search-group-header.search-group-first {
+            margin-top: 0;
+        }
+        .search-group-loc {
+            font-weight: 600;
+        }
+        .search-group-icon {
+            color: #6c757d;
+        }
+        .search-group-open {
+            margin-left: auto;
+            color: #0d6efd;
+            opacity: 0.85;
+        }
+        .search-group-open:hover {
+            opacity: 1;
+        }
+        mark.search-hl {
+            background: #ffe08a;
+            color: inherit;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
     </style>
 
 
@@ -394,15 +430,11 @@
             {% endfor %}
         </div>
 
-        <!-- 目录 readme 信息区（自动读取该目录下含 readme 关键字的 .md/.txt 文档） -->
+        <!-- 目录 readme 信息区（自动读取该目录下含 readme 关键字的 .md/.txt 文档，含子目录） -->
         <div id="readmeArea" class="mt-3 d-none">
             <div class="card">
-                <div class="card-header d-flex align-items-center gap-2 py-2">
-                    <i class="bi bi-journal-text"></i>
-                    <span class="fw-semibold">目录说明</span>
-                </div>
                 <div class="card-body p-0">
-                    <ul class="nav nav-tabs px-2 pt-2" id="readmeTabs" role="tablist"></ul>
+                    <ul class="nav nav-tabs align-items-center px-2 pt-2" id="readmeTabs" role="tablist"></ul>
                     <div class="tab-content p-3" id="readmeTabContent"></div>
                 </div>
             </div>
@@ -3165,7 +3197,16 @@
 
                         // 强制设置display属性
                         item.setAttribute('style', matches ? 'display: flex !important' : 'display: none !important');
-                        if (matches) matchCount++;
+                        if (matches) {
+                            // 高亮名称中的关键字（保留原图标与 onclick）
+                            const link = item.querySelector('.item-link');
+                            const iconEl = link.querySelector('i');
+                            if (iconEl) {
+                                const iconHtml = iconEl.outerHTML;
+                                link.innerHTML = `${iconHtml} ${highlightSearchName(fileName, searchTerm)}`;
+                            }
+                            matchCount++;
+                        }
                     });
 
                     if (matchCount === 0) {
@@ -3191,37 +3232,48 @@
                                 return;
                             }
 
-                            // 根据搜索结果创建新的列表项
+                            // 按所在目录分组（保持结果原有顺序）
+                            const groups = new Map();
                             results.forEach(item => {
-                                const listItem = document.createElement('div');
-                                listItem.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
-
-                                const icon = item.is_dir ? 'folder' : getFileIcon(item.name);
-                                // 下载等接口使用去掉 alias 前缀的相对路径
                                 const relPath = stripAlias(item.path);
-                                // 所在文件夹：相对路径去掉最后一个层级，空串表示根目录
                                 const parentRel = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
+                                if (!groups.has(parentRel)) groups.set(parentRel, []);
+                                groups.get(parentRel).push({item, relPath});
+                            });
+
+                            let firstGroup = true;
+                            for (const [parentRel, groupItems] of groups) {
                                 const parentLabel = parentRel || '/';
                                 const parentUrl = parentRel ? `/dir/${currentAlias}/${parentRel}` : `/dir/${currentAlias}`;
 
-                                listItem.innerHTML = `
+                                // 分组头：每个位置只显示一次 + 打开所在目录图标
+                                const groupHeader = document.createElement('div');
+                                groupHeader.className = 'search-group-header' + (firstGroup ? ' search-group-first' : '');
+                                firstGroup = false;
+                                groupHeader.innerHTML = `
+            <i class="bi bi-folder2 search-group-icon"></i>
+            <span class="search-group-loc">${escapeHtmlText(parentLabel)}</span>
+            <a href="${parentUrl}" title="打开所在目录" class="search-group-open">
+                <i class="bi bi-folder2-open"></i>
+            </a>`;
+                                listGroup.appendChild(groupHeader);
+
+                                // 组内文件/目录项
+                                groupItems.forEach(({ item, relPath }) => {
+                                    const listItem = document.createElement('div');
+                                    listItem.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+                                    const icon = item.is_dir ? 'folder' : getFileIcon(item.name);
+
+                                    listItem.innerHTML = `
     <div class="d-flex align-items-center">
         <input type="checkbox" class="form-check-input me-2 item-checkbox"
                data-path="${item.path}" data-name="${item.name}" data-is-dir="${item.is_dir}">
-        <div class="flex-grow-1" style="min-width:0;">
-            <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
-               class="item-link"
-               ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${relPath}'); return false;"` : ''}>
-                <i class="bi bi-${icon} me-2"></i>
-                ${item.name}
-            </a>
-            <div class="small text-muted" style="margin-left: 1.7rem;">
-                位于：${parentLabel}
-                <a href="${parentUrl}" title="打开所在目录" class="text-decoration-none ms-1">
-                    <i class="bi bi-folder2-open"></i>
-                </a>
-            </div>
-        </div>
+        <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
+           class="item-link"
+           ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${relPath}'); return false;"` : ''}>
+            <i class="bi bi-${icon} me-2"></i>
+            ${highlightSearchName(item.name, searchTerm)}
+        </a>
     </div>
     <div class="d-flex align-items-center">
         <div class="item-actions me-3">
@@ -3255,8 +3307,9 @@
     </div>
 `;
 
-                                listGroup.appendChild(listItem);
-                            });
+                                    listGroup.appendChild(listItem);
+                                });
+                            }
                             // 重新绑定checkbox事件
                             bindCheckboxEvents();
                             // 重新初始化工具提示
@@ -3333,6 +3386,22 @@
             return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
+        function escapeRegExpStr(s) {
+            return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        // 高亮名称中的搜索关键字（安全转义后处理，避免 XSS）
+        function highlightSearchName(name, term) {
+            const safeName = escapeHtmlText(name);
+            if (!term) return safeName;
+            try {
+                const re = new RegExp('(' + escapeRegExpStr(escapeHtmlText(term)) + ')', 'gi');
+                return safeName.replace(re, '<mark class="search-hl">$1</mark>');
+            } catch (e) {
+                return safeName;
+            }
+        }
+
         function renderReadmeArea(results) {
             const area = document.getElementById('readmeArea');
             if (!area || !results.length) return;
@@ -3380,6 +3449,18 @@
                 }
 
                 content.appendChild(pane);
+            });
+
+            // 隐藏/显示切换按钮（内容过长时可手动收起或再展开）
+            const toggleLi = document.createElement('li');
+            toggleLi.className = 'nav-item ms-auto';
+            toggleLi.innerHTML = '<button type="button" class="btn btn-sm btn-outline-secondary readme-toggle" id="readmeToggleBtn" title="隐藏"><i class="bi bi-chevron-up"></i></button>';
+            tabs.appendChild(toggleLi);
+            toggleLi.querySelector('.readme-toggle').addEventListener('click', () => {
+                const hidden = content.classList.toggle('d-none');
+                const btn = toggleLi.querySelector('.readme-toggle');
+                btn.title = hidden ? '展开' : '隐藏';
+                btn.innerHTML = hidden ? '<i class="bi bi-chevron-down"></i>' : '<i class="bi bi-chevron-up"></i>';
             });
 
             area.classList.remove('d-none');
