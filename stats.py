@@ -1,38 +1,46 @@
 # -*- coding: utf-8 -*-
-"""上传/下载统计分析。
+"""上传/下载/访问统计分析（SQLite 后端）。
 
-- 按天分片存储：<主程序目录>/stats/stats-YYYY-MM-DD.json
-- 线程锁 + 原子写（tmp + os.replace）
-- 事件字段：{ts, type(upload/download/share_download/batch/log_admin), role(admin/dir_admin/password/share/anonymous),
-  alias, file, size, ip, ua}
-- 保留策略存 stats_config.json（retention_days，默认 90 天）
+- 存储：<主程序目录>/stats/stats.db（WAL 模式），保留策略存 stats_config.json
+- 写：内存队列批量提交（每 1 秒或满 200 条），安全事件(auth_fail/auth_ok/log_admin/block/unblock)同步立即写
+- 事件字段：ts/type/role/alias/file/size/ip/ua/target/detail
+- 对外 API 与原 JSON 分片版一致：
+  record_event/record_view/record_view_dir/query_events/summary_counts/by_file/
+  view_summary/delete_range/clear_all/cleanup_old/set_retention/get_retention
 """
+import atexit
 import json
 import os
+import sqlite3
 import threading
 import time
-from datetime import datetime
 
 _stats_dir = None
 _config_path = None
 _config = {}
-_lock = threading.Lock()
+_conn = None
+_lock = threading.Lock()          # 保护 DB 与队列
+_queue = []                       # 待批量写入事件行
+_queue_size = 200
+_queue_flush_interval = 1.0
+_last_flush = 0.0
 
-# 事件类型分组（审计页按组展示）
-EVENT_TRANSFER = ('upload', 'download', 'share_download', 'batch')           # 传输
-EVENT_MANAGE = ('delete', 'rename', 'move', 'create', 'edit', 'log_admin')   # 管理操作
-EVENT_AUTH = ('auth_fail',)                                                   # 认证失败
-EVENT_HIGH_FREQ = ('view', 'view_dir')                                        # 高频访问（仅计数，不落明细）
+EVENT_TRANSFER = ('upload', 'download', 'share_download', 'batch')
+EVENT_MANAGE = ('delete', 'rename', 'move', 'create', 'edit', 'log_admin')
+EVENT_AUTH = ('auth_fail', 'auth_ok')
+# 安全/管理事件：同步立即写，不排队（追责类不能丢）
+SYNC_TYPES = {'auth_fail', 'auth_ok', 'log_admin', 'block', 'unblock'}
+
+_EVENT_COLS = ('ts', 'type', 'role', 'alias', 'file', 'size', 'ip', 'ua', 'target', 'detail')
 
 
-def _ensure():
-    if _stats_dir is None:
-        from main import get_app_path
-        configure(os.path.join(get_app_path(), "stats"))
+def _get_app_path_safe():
+    from main import get_app_path
+    return get_app_path()
 
 
 def configure(dirpath):
-    global _stats_dir, _config_path, _config
+    global _stats_dir, _config_path, _config, _conn
     _stats_dir = dirpath
     os.makedirs(_stats_dir, exist_ok=True)
     _config_path = os.path.join(_stats_dir, "stats_config.json")
@@ -42,12 +50,31 @@ def configure(dirpath):
     except Exception:
         _config = {}
 
+    db_path = os.path.join(_stats_dir, "stats.db")
+    _conn = sqlite3.connect(db_path, check_same_thread=False)
+    _conn.execute("PRAGMA journal_mode=WAL")
+    _conn.execute(
+        """CREATE TABLE IF NOT EXISTS events (
+            ts INTEGER, type TEXT, role TEXT, alias TEXT, file TEXT,
+            size INTEGER, ip TEXT, ua TEXT, target TEXT, detail TEXT)"""
+    )
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(ip, ts)")
+    _conn.commit()
+    atexit.register(_flush_now)
 
-def _atomic_write(path, obj):
-    tmp = path + ".tmp"
+
+def _ensure():
+    if _conn is None:
+        configure(os.path.join(_get_app_path_safe(), "stats"))
+
+
+def _atomic_write_config():
+    tmp = _config_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+        json.dump(_config, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _config_path)
 
 
 def get_retention():
@@ -59,14 +86,42 @@ def set_retention(days):
     _ensure()
     _config["retention_days"] = max(1, int(days))
     with _lock:
-        _atomic_write(_config_path, _config)
+        _atomic_write_config()
+
+
+# ---------------- 写：队列批量 + 安全事件同步 ----------------
+
+def _flush_locked():
+    """批量提交队列（须持锁）"""
+    global _queue, _last_flush
+    if not _queue:
+        return
+    rows, _queue = _queue, []
+    try:
+        _conn.executemany(
+            "INSERT INTO events(ts,type,role,alias,file,size,ip,ua,target,detail) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        _conn.commit()
+    except Exception:
+        # 异常时尽量保留数据，放回队首
+        _queue = rows + _queue
+
+
+def _flush_now():
+    with _lock:
+        _flush_locked()
+
+
+def _flush_before_read():
+    with _lock:
+        _flush_locked()
 
 
 def record_event(**kw):
-    """记录一条事件。kw: type/role/alias/file/size/ip/ua/ts/target/detail"""
+    """记录一条事件。安全类型同步写，其余入队批量写。返回事件 dict。"""
     _ensure()
     ts = int(kw.get("ts") or time.time())
-    day_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
     ev = {
         "ts": ts,
         "type": kw.get("type", ""),
@@ -76,272 +131,207 @@ def record_event(**kw):
         "size": int(kw.get("size") or 0),
         "ip": kw.get("ip", ""),
         "ua": (kw.get("ua") or "")[:500],
+        "target": kw.get("target") or "",
+        "detail": str(kw.get("detail"))[:1000] if kw.get("detail") else "",
     }
-    if kw.get("target"):
-        ev["target"] = kw["target"]
-    if kw.get("detail"):
-        ev["detail"] = str(kw["detail"])[:1000]
-    with _lock:
-        path = os.path.join(_stats_dir, f"stats-{day_str}.json")
-        events = _load_day(day_str)
-        events.append(ev)
-        _atomic_write(path, events)
+    row = tuple(ev[k] for k in _EVENT_COLS)
+    if ev["type"] in SYNC_TYPES:
+        with _lock:
+            _conn.execute(
+                "INSERT INTO events(ts,type,role,alias,file,size,ip,ua,target,detail) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                row,
+            )
+            _conn.commit()
+    else:
+        global _queue, _last_flush
+        with _lock:
+            _queue.append(row)
+            now = time.time()
+            if len(_queue) >= _queue_size or now - _last_flush >= _queue_flush_interval:
+                _flush_locked()
+                _last_flush = now
     return ev
 
 
-def _load_day(day=0):
-    if isinstance(day, str):
-        day_str = day
-    else:
-        day_str = datetime.fromtimestamp(day).strftime("%Y-%m-%d")
-    path = os.path.join(_stats_dir, f"stats-{day_str}.json")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+def record_view(filepath, **ctx):
+    """文件预览/查看（落明细）。ctx: role/alias/ip/ua"""
+    return record_event(type="view", file=filepath, **ctx)
 
 
-def _day_files():
-    out = []
-    for fn in sorted(os.listdir(_stats_dir)):
-        if fn.startswith("stats-") and fn.endswith(".json") and fn != "stats_config.json":
-            day_str = fn[len("stats-"):-5]
-            try:
-                datetime.strptime(day_str, "%Y-%m-%d")
-                out.append((day_str, os.path.join(_stats_dir, fn)))
-            except Exception:
-                continue
-    return out
+def record_view_dir(dirpath, **ctx):
+    """目录访问（落明细）。ctx: role/alias/ip/ua"""
+    return record_event(type="view_dir", file=dirpath, **ctx)
 
 
-def _load_day_file(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+# ---------------- 读 ----------------
+
+def _range_where(start=None, end=None):
+    where, params = [], []
+    if start is not None:
+        where.append("ts>=?")
+        params.append(int(start))
+    if end is not None:
+        where.append("ts<=?")
+        params.append(int(end))
+    w = ("WHERE " + " AND ".join(where)) if where else ""
+    return w, params
 
 
-def _apply_filters(events, etype=None, role=None, keyword=None):
-    out = events
-    if etype:
-        out = [e for e in out if e.get("type") == etype]
-    if role:
-        out = [e for e in out if e.get("role") == role]
-    if keyword:
-        kw = keyword.lower()
-        out = [e for e in out
-               if kw in (e.get("file") or "").lower()
-               or kw in (e.get("alias") or "").lower()
-               or kw in (e.get("ip") or "")]
-    return out
+def _resolve_types(etype):
+    if not etype:
+        return None
+    if etype == "manage":
+        return list(EVENT_MANAGE) + ["log_admin"]
+    if etype == "auth":
+        return list(EVENT_AUTH)
+    if "," in etype:
+        return [t.strip() for t in etype.split(",") if t.strip()]
+    return [etype]
 
 
-def _range_events(day_list, start=None, end=None):
-    for day_str, path in day_list:
-        try:
-            day_ts = datetime.strptime(day_str, "%Y-%m-%d").timestamp()
-        except Exception:
-            continue
-        if start and day_ts + 86400 < start:
-            continue
-        if end and day_ts > end:
-            continue
-        yield from _load_day_file(path)
+def _rows_to_events(rows):
+    return [dict(zip(_EVENT_COLS, r)) for r in rows]
 
 
 def query_events(start=None, end=None, etype=None, role=None, keyword=None, page=1, size=50):
-    """时间范围过滤 + 分页，按时间倒序。start/end 为时间戳（秒）。
-    etype 支持单值、逗号分隔，或特殊值 'manage'(管理操作) / 'auth'(认证失败)。"""
+    """时间范围过滤 + 分页，按时间倒序。etype 支持单值/逗号/manage/auth。"""
     _ensure()
-    events = list(_range_events(_day_files(), start, end))
-    if etype:
-        if etype == 'manage':
-            types = list(EVENT_MANAGE) + ['log_admin']
-        elif etype == 'auth':
-            types = list(EVENT_AUTH)
-        elif ',' in etype:
-            types = [t.strip() for t in etype.split(',') if t.strip()]
-        else:
-            types = [etype]
-        events = [e for e in events if e.get("type") in types]
+    _flush_before_read()
+    w0, p0 = _range_where(start, end)
+    where, params = list(p0), []
+    types = _resolve_types(etype)
+    if types:
+        where.append("type IN (%s)" % ",".join("?" * len(types)))
+        params.extend(types)
     if role:
-        events = [e for e in events if e.get("role") == role]
+        where.append("role=?")
+        params.append(role)
     if keyword:
         kw = keyword.lower()
-        events = [e for e in events
-                  if kw in (e.get("file") or "").lower()
-                  or kw in (e.get("alias") or "").lower()
-                  or kw in (e.get("ip") or "")]
-    events.sort(key=lambda e: e.get("ts", 0), reverse=True)
-    total = len(events)
-    start_i = (page - 1) * size
-    return {
-        "total": total,
-        "page": page,
-        "size": size,
-        "events": events[start_i:start_i + size],
-    }
+        where.append("(lower(file) LIKE ? OR lower(alias) LIKE ? OR ip LIKE ?)")
+        params.extend([f"%{kw}%", f"%{kw}%", f"%{kw}%"])
+    w = ("WHERE " + " AND ".join(where)) if where else ""
+    with _lock:
+        total = _conn.execute(f"SELECT COUNT(*) FROM events {w}", params).fetchone()[0]
+        rows = _conn.execute(
+            f"SELECT ts,type,role,alias,file,size,ip,ua,target,detail FROM events {w} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            params + [size, (page - 1) * size],
+        ).fetchall()
+    return {"total": total, "page": page, "size": size, "events": _rows_to_events(rows)}
 
 
 def summary_counts(start=None, end=None):
     _ensure()
+    _flush_before_read()
     keys = list(EVENT_TRANSFER) + list(EVENT_MANAGE) + list(EVENT_AUTH)
     counts = {k: 0 for k in keys}
     counts["total"] = 0
     counts["total_bytes"] = 0
-    for e in _range_events(_day_files(), start, end):
-        t = e.get("type")
+    w, params = _range_where(start, end)
+    with _lock:
+        rows = _conn.execute(f"SELECT type, COUNT(*), SUM(size) FROM events {w} GROUP BY type", params).fetchall()
+    for t, c, s in rows:
         if t in counts:
-            counts[t] += 1
-        counts["total"] += 1
-        counts["total_bytes"] += int(e.get("size") or 0)
+            counts[t] = c
+        counts["total"] += c
+        counts["total_bytes"] += s or 0
     return counts
 
 
-# ---------- 高频访问计数（view / view_dir 不落明细，仅聚合计数） ----------
-
-def _counter_file(day_str):
-    return os.path.join(_stats_dir, f"counters-{day_str}.json")
-
-
-def _load_counter_path(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _counter_files():
-    out = []
-    for fn in os.listdir(_stats_dir):
-        if fn.startswith("counters-") and fn.endswith(".json"):
-            day_str = fn[len("counters-"):-5]
-            try:
-                datetime.strptime(day_str, "%Y-%m-%d")
-                out.append((day_str, os.path.join(_stats_dir, fn)))
-            except Exception:
-                continue
-    return out
-
-
-def _bump_counter(group, key, step=1):
+def by_file(limit=10):
+    """Top N 被下载文件（按次数）"""
     _ensure()
-    day_str = datetime.now().strftime("%Y-%m-%d")
+    _flush_before_read()
     with _lock:
-        path = _counter_file(day_str)
-        cnt = _load_counter_path(path)
-        cnt.setdefault(group, {})[key] = int(cnt.get(group, {}).get(key, 0)) + step
-        _atomic_write(path, cnt)
-
-
-def record_view(key):
-    """文件预览/查看计数（不落明细）。key=文件路径"""
-    _bump_counter("views", key)
-
-
-def record_view_dir(key):
-    """目录访问计数（不落明细）。key=目录路径"""
-    _bump_counter("dirs", key)
+        rows = _conn.execute(
+            "SELECT alias, file, COUNT(*) AS c FROM events WHERE type IN ('download','share_download') "
+            "GROUP BY alias, file ORDER BY c DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [{"file": "/".join(x for x in (a, f) if x) or "?", "count": c} for a, f, c in rows]
 
 
 def view_summary(start=None, end=None, top=10):
+    """访问聚合：查看 Top 文件 / 目录访问 Top"""
     _ensure()
-    views = {}
-    dirs = {}
-    for day_str, path in _counter_files():
-        try:
-            day_ts = datetime.strptime(day_str, "%Y-%m-%d").timestamp()
-        except Exception:
-            continue
-        if start and day_ts + 86400 < start:
-            continue
-        if end and day_ts > end:
-            continue
-        cnt = _load_counter_path(path)
-        for k, v in cnt.get("views", {}).items():
-            views[k] = views.get(k, 0) + v
-        for k, v in cnt.get("dirs", {}).items():
-            dirs[k] = dirs.get(k, 0) + v
+    _flush_before_read()
+
+    def _q(type_):
+        clauses, params = [], []
+        if start is not None:
+            clauses.append("ts>=?")
+            params.append(int(start))
+        if end is not None:
+            clauses.append("ts<=?")
+            params.append(int(end))
+        clauses.append("type=?")
+        w = "WHERE " + " AND ".join(clauses)
+        with _lock:
+            rows = _conn.execute(
+                f"SELECT file, COUNT(*) c FROM events {w} GROUP BY file ORDER BY c DESC, file LIMIT ?",
+                params + [type_, top],
+            ).fetchall()
+        return rows
+
+    views = _q("view")
+    dirs = _q("view_dir")
     return {
-        "view_total": sum(views.values()),
-        "dir_total": sum(dirs.values()),
-        "top_views": [{"file": k, "count": c}
-                      for k, c in sorted(views.items(), key=lambda x: -x[1])[:top]],
-        "top_dirs": [{"dir": k, "count": c}
-                     for k, c in sorted(dirs.items(), key=lambda x: -x[1])[:top]],
+        "view_total": sum(c for _, c in views),
+        "dir_total": sum(c for _, c in dirs),
+        "top_views": [{"file": f, "count": c} for f, c in views],
+        "top_dirs": [{"dir": f, "count": c} for f, c in dirs],
     }
 
 
-def by_file(limit=10):
-    """Top N 被下载文件（次数）"""
-    _ensure()
-    agg = {}
-    for e in _range_events(_day_files()):
-        if e.get("type") in ("download", "share_download"):
-            k = "/".join(x for x in (e.get("alias"), e.get("file")) if x) or "?"
-            agg[k] = agg.get(k, 0) + 1
-    top = sorted(agg.items(), key=lambda x: -x[1])[:limit]
-    return [{"file": k, "count": c} for k, c in top]
-
-
 def delete_range(start=None, end=None):
-    """按时间范围删除事件（命中整天重写剔除，整片命中则删除该片）。返回删除条数（含计数文件）。"""
+    """删除时间范围内事件。返回删除条数。"""
     _ensure()
-    removed = 0
+    _flush_now()
+    w, params = _range_where(start, end)
     with _lock:
-        for day_str, path in _day_files():
-            try:
-                day_ts = datetime.strptime(day_str, "%Y-%m-%d").timestamp()
-            except Exception:
-                continue
-            hit = (not start or day_ts + 86400 > start) and (not end or day_ts < end)
-            if not hit:
-                continue
-            events = _load_day_file(path)
-            keep = [e for e in events
-                    if not ((not start or e.get("ts", 0) >= start) and (not end or e.get("ts", 0) <= end))]
-            removed += len(events) - len(keep)
-            if keep:
-                _atomic_write(path, keep)
-            else:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        # 命中天数的访问计数文件一并处理（整片删）
-        for day_str, path in _counter_files():
-            try:
-                day_ts = datetime.strptime(day_str, "%Y-%m-%d").timestamp()
-            except Exception:
-                continue
-            if (not start or day_ts + 86400 > start) and (not end or day_ts < end):
-                try:
-                    os.remove(path)
-                    removed += 1
-                except OSError:
-                    pass
-    return removed
+        cur = _conn.execute(f"DELETE FROM events {w}", params)
+        _conn.commit()
+    return cur.rowcount
 
 
 def clear_all():
     _ensure()
-    removed = 0
+    _flush_now()
     with _lock:
-        for _, path in list(_day_files()) + list(_counter_files()):
-            try:
-                os.remove(path)
-                removed += 1
-            except OSError:
-                pass
-    return removed
+        n = _conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        _conn.execute("DELETE FROM events")
+        _conn.commit()
+    return n
 
 
 def cleanup_old():
-    """按保留策略删除过期分片。返回删除条数。"""
+    """按保留策略删除过期事件。返回删除条数。"""
     _ensure()
-    retention = get_retention()
-    cutoff = time.time() - retention * 86400
-    return delete_range(start=None, end=cutoff)
+    cutoff = time.time() - get_retention() * 86400
+    return delete_range(end=cutoff)
+
+
+def import_json_legacy(json_dir=None):
+    """一次性迁移旧 JSON 分片（stats-YYYY-MM-DD.json）到 SQLite。返回导入条数。"""
+    _ensure()
+    if json_dir is None:
+        json_dir = _stats_dir
+    imported = 0
+    for fn in sorted(os.listdir(json_dir)):
+        if not fn.startswith("stats-") or not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(json_dir, fn), "r", encoding="utf-8") as f:
+                events = json.load(f)
+        except Exception:
+            continue
+        for ev in events:
+            record_event(
+                ts=ev.get("ts"), type=ev.get("type"), role=ev.get("role"),
+                alias=ev.get("alias"), file=ev.get("file"), size=ev.get("size"),
+                ip=ev.get("ip"), ua=ev.get("ua"),
+                target=ev.get("target"), detail=ev.get("detail"),
+            )
+            imported += 1
+    _flush_now()
+    return imported
