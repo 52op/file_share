@@ -1735,6 +1735,13 @@ def move_items(alias):
             if not os.path.exists(source_path):
                 return f"Source file {item_name} not found", 404
 
+            # 循环移动校验：不能把文件夹移动到其自身或其子目录中
+            if item.get('is_dir'):
+                src_norm = os.path.normcase(os.path.abspath(source_path))
+                tgt_norm = os.path.normcase(os.path.abspath(target_dir))
+                if tgt_norm == src_norm or tgt_norm.startswith(src_norm + os.sep):
+                    return f"不能将文件夹 {item_name} 移动到其自身或其子目录中", 400
+
             # 执行移动操作
             shutil.move(source_path, dest_path)
             flask_app.logger.info(f"{client_info} 移动了{item_name} 从 {current_path} 到 {target_path}")

@@ -220,6 +220,57 @@
             padding: 0 2px;
             border-radius: 2px;
         }
+
+        /* 移动目标：树形选择器 */
+        .move-tree {
+            max-height: 320px;
+            overflow-y: auto;
+            border: 1px solid var(--bs-border-color, #dee2e6);
+            border-radius: 6px;
+            padding: 6px;
+            background: var(--bs-body-bg, #fff);
+        }
+        .mt-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        .mt-row:hover {
+            background: var(--bs-secondary-bg, #f1f3f5);
+        }
+        .mt-row.selected {
+            background: #cfe2ff;
+        }
+        .mt-row.disabled {
+            opacity: .45;
+            cursor: not-allowed;
+        }
+        .mt-caret {
+            width: 16px;
+            display: inline-flex;
+            justify-content: center;
+            color: #6c757d;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .mt-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .mt-relpath {
+            font-size: 11px;
+            opacity: .8;
+        }
+        .mt-children {
+            margin-left: 16px;
+            padding-left: 6px;
+            border-left: 1px dashed var(--bs-border-color, #e9ecef);
+        }
     </style>
 
 
@@ -450,12 +501,12 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <div class="mb-3">
-                        <label class="form-label">选择目标目录:</label>
-                        <select class="form-select" id="moveTarget">
-                            <option value="">加载中...</option>
-                        </select>
+                    <div class="mb-2">
+                        <input type="text" class="form-control" id="moveTreeSearch" placeholder="搜索目标文件夹..." autocomplete="off">
                     </div>
+                    <div class="mb-2" id="moveTree"></div>
+                    <div class="small text-muted" id="moveTargetPreview"></div>
+                    <input type="hidden" id="moveTarget">
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -3476,20 +3527,36 @@
 
         /* 移动文件逻辑 */
         // 显示移动对话框
+        // 从当前列表 DOM 反查条目是否目录（单选移动时仅传了名称）
+        function getItemIsDirFromDom(name) {
+            let isDir = false;
+            document.querySelectorAll('.list-group-item').forEach(it => {
+                const link = it.querySelector('.item-link');
+                const checkbox = it.querySelector('.item-checkbox');
+                if (link && checkbox && link.textContent.trim() === name) {
+                    isDir = checkbox.dataset.isDir === 'true';
+                }
+            });
+            return isDir;
+        }
+
         function showMoveDialog(singleItem = null) {
             if (!hasAdminPermission) {
                 alert('需要管理员权限');
                 return;
             }
             const selectedItems = singleItem ?
-                [{name: singleItem, path: singleItem}] :
+                (function () {
+                    const n = Array.isArray(singleItem) ? singleItem[0] : singleItem;
+                    return [{name: n, path: n, is_dir: getItemIsDirFromDom(n)}];
+                })() :
                 Array.from(document.querySelectorAll('.item-checkbox:checked')).map(checkbox => ({
                     name: checkbox.dataset.name,
                     path: checkbox.dataset.path,
                     is_dir: checkbox.dataset.isDir === 'true'
                 }));
 
-            if (selectedItems.length === 0) {
+            if (selectedItems.length === 0 || (!selectedItems[0].name && !selectedItems[0].path)) {
                 alert('请选择要移动的文件');
                 return;
             }
@@ -3497,15 +3564,16 @@
             // 获取当前路径
             const currentPath = window.location.pathname;
 
-            // 初始化目标目录选择器
-            initializeTargetDirectories(currentPath);
-
             // 确保数据格式正确
             const sanitizedItems = selectedItems.map(item => ({
                 name: typeof item.name === 'string' ? item.name : item.name[0],
                 path: typeof item.path === 'string' ? item.path : item.path[0],
                 is_dir: !!item.is_dir
             }));
+
+            // 初始化目标目录选择器（树形 + 搜索）
+            const dirItems = sanitizedItems.filter(i => i.is_dir);
+            initializeTargetDirectories(currentPath, dirItems);
 
             // 保存选中的项目到dialog中
             const dialog = document.getElementById('moveDialog');
@@ -3515,31 +3583,223 @@
             new bootstrap.Modal(dialog).show();
         }
 
-        // 初始化目标目录选择器
-        function initializeTargetDirectories(currentPath) {
-            const select = document.getElementById('moveTarget');
-            select.innerHTML = '<option value="">加载中...</option>';
+        // ---------- 移动目标：树形选择器 + 实时搜索 ----------
+        let moveTree = null;             // 树根
+        let moveTreeCurrent = '';        // 当前目录 URL 路径
+        let moveTreeForbidden = [];      // 禁用前缀：选中文件夹自身 / 其子目录
+        let moveTreeSearch = '';         // 搜索词
+        let moveTreeSelected = '';       // 选中目标 path
 
-            // 获取所有目录结构
+        // 扁平目录列表 → 嵌套树
+        function buildDirTree(list, alias) {
+            const root = { name: '/', path: '/dir/' + alias, children: new Map() };
+            list.forEach(it => {
+                const segs = String(it.name).split('/').filter(Boolean);
+                if (!segs.length) return;
+                let node = root;
+                let acc = '/dir/' + alias;
+                segs.forEach(seg => {
+                    acc += '/' + seg;
+                    if (!node.children.has(seg)) {
+                        node.children.set(seg, {
+                            name: seg, path: acc, children: new Map(), expanded: false, dup: false
+                        });
+                    }
+                    node = node.children.get(seg);
+                });
+            });
+            return root;
+        }
+
+        // 同级重名标记（重名节点渲染时显示相对路径小字）
+        function markMoveDuplicates(node) {
+            if (!node || !node.children) return;
+            const counts = new Map();
+            node.children.forEach(c => counts.set(c.name, (counts.get(c.name) || 0) + 1));
+            node.children.forEach(c => {
+                c.dup = counts.get(c.name) > 1;
+                markMoveDuplicates(c);
+            });
+        }
+
+        // 目标是否禁用：当前目录本身 / 选中文件夹自身或其子目录
+        function isMoveNodeDisabled(node) {
+            if (node.path === moveTreeCurrent) return true;
+            for (const f of moveTreeForbidden) {
+                if (node.path === f || node.path.startsWith(f + '/')) return true;
+            }
+            return false;
+        }
+
+        // 收集搜索命中节点（名称或路径包含关键词），命中含祖先链
+        function collectMoveHits(node, term, hits) {
+            let matched = node.name.toLowerCase().includes(term)
+                || node.path.toLowerCase().includes(term);
+            node.children.forEach(c => {
+                if (collectMoveHits(c, term, hits)) matched = true;
+            });
+            if (matched) hits.add(node);
+            return matched;
+        }
+
+        // 渲染单个节点（懒渲染：子级仅展开时生成）
+        function renderMoveNode(node, hits, searching) {
+            const wrap = document.createElement('div');
+            wrap.className = 'mt-node';
+
+            const disabled = isMoveNodeDisabled(node);
+            const row = document.createElement('div');
+            row.className = 'mt-row'
+                + (disabled ? ' disabled' : '')
+                + (moveTreeSelected === node.path ? ' selected' : '');
+            row.dataset.path = node.path;
+
+            // 展开箭头
+            const caret = document.createElement('span');
+            caret.className = 'mt-caret';
+            if (node.children.size > 0) {
+                caret.innerHTML = node.expanded
+                    ? '<i class="bi bi-caret-down-fill"></i>'
+                    : '<i class="bi bi-caret-right-fill"></i>';
+                caret.title = node.expanded ? '折叠' : '展开';
+                caret.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    node.expanded = !node.expanded;
+                    renderMoveTree();
+                });
+            } else {
+                caret.innerHTML = '<i class="bi bi-caret-right-fill" style="opacity:.15"></i>';
+            }
+
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-folder2 me-1 text-warning';
+
+            const label = document.createElement('span');
+            label.className = 'mt-label';
+            if (searching && node.name.toLowerCase().includes(moveTreeSearch)) {
+                const idx = node.name.toLowerCase().indexOf(moveTreeSearch);
+                label.innerHTML = escapeHtmlText(node.name.slice(0, idx))
+                    + '<mark class="search-hl">' + escapeHtmlText(node.name.slice(idx, idx + moveTreeSearch.length)) + '</mark>'
+                    + escapeHtmlText(node.name.slice(idx + moveTreeSearch.length));
+            } else {
+                label.textContent = node.name;
+            }
+
+            row.appendChild(caret);
+            row.appendChild(icon);
+            row.appendChild(label);
+
+            // 同级重名时显示相对路径小字
+            if (node.dup && node.path) {
+                const rel = node.path.replace(/^\/dir\/[^/]*/, '');
+                const small = document.createElement('small');
+                small.className = 'text-muted ms-2 mt-relpath';
+                small.textContent = rel;
+                row.appendChild(small);
+            }
+
+            if (!disabled) {
+                row.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    moveTreeSelected = node.path;
+                    document.getElementById('moveTarget').value = node.path;
+                    document.getElementById('moveTargetPreview').textContent = '移动到：' + node.path;
+                    renderMoveTree();
+                });
+            }
+            wrap.appendChild(row);
+
+            // 懒渲染子级：展开时（搜索命中路径时自动展开）生成
+            const showChildren = (searching && hits.has(node)) || node.expanded;
+            if (showChildren && node.children.size > 0) {
+                const childrenWrap = document.createElement('div');
+                childrenWrap.className = 'mt-children';
+                node.children.forEach(c => {
+                    // 搜索模式：只渲染命中节点及其祖先链上的节点
+                    if (searching && !hits.has(c)) return;
+                    childrenWrap.appendChild(renderMoveNode(c, hits, searching));
+                });
+                wrap.appendChild(childrenWrap);
+            }
+            return wrap;
+        }
+
+        // 渲染整棵目标树
+        function renderMoveTree() {
+            const container = document.getElementById('moveTree');
+            if (!container || !moveTree) return;
+            container.innerHTML = '';
+
+            const searching = moveTreeSearch.trim().length > 0;
+            let hits = new Set();
+            if (searching) {
+                collectMoveHits(moveTree, moveTreeSearch.trim().toLowerCase(), hits);
+                if (hits.size === 0) {
+                    container.innerHTML = '<div class="text-center text-muted py-3">未找到匹配的文件夹</div>';
+                    return;
+                }
+            }
+
+            // 默认展开：根层 + 当前目录路径链（搜索时由命中路径自动展开）
+            if (!searching) {
+                const segs = moveTreeCurrent.replace(/^\/dir\/[^/]*/, '').split('/').filter(Boolean);
+                let node = moveTree;
+                segs.forEach(seg => {
+                    const next = node.children.get(seg);
+                    if (next) { next.expanded = true; node = next; }
+                });
+            }
+
+            moveTree.children.forEach(c => {
+                if (searching && !hits.has(c)) return;
+                container.appendChild(renderMoveNode(c, hits, searching));
+            });
+        }
+
+        // 初始化目标目录选择器（树形 + 搜索）
+        function initializeTargetDirectories(currentPath, dirItems) {
+            moveTreeCurrent = currentPath;
+            moveTreeForbidden = (dirItems || []).map(d => {
+                // 选中文件夹完整 URL：优先 data-path（alias/rel），否则按当前路径+名称拼接
+                let p = d.path;
+                if (typeof p !== 'string' || !p.includes('/') || p.startsWith('/')) {
+                    p = currentPath.replace(/^\/dir\//, '') + '/' + d.name;
+                }
+                return '/dir/' + p;
+            });
+            moveTreeSearch = '';
+            moveTreeSelected = '';
+            const searchInput = document.getElementById('moveTreeSearch');
+            if (searchInput) searchInput.value = '';
+            document.getElementById('moveTarget').value = '';
+            document.getElementById('moveTargetPreview').textContent = '';
+
+            const treeEl = document.getElementById('moveTree');
+            treeEl.innerHTML = '<div class="text-center text-muted py-3">加载中...</div>';
+
             fetch(`/api/directories/{{ dir_obj.alias }}`)
                 .then(response => response.json())
                 .then(directories => {
-                    select.innerHTML = '';
-                    // 添加根目录选项
-                    select.innerHTML += `<option value="/dir/{{ dir_obj.alias }}">/</option>`;
-
-                    // 添加其他目录选项
-                    directories.forEach(dir => {
-                        if (dir.path !== currentPath) { // 排除当前目录
-                            select.innerHTML += `<option value="${dir.path}">${dir.name}</option>`;
-                        }
-                    });
+                    moveTree = buildDirTree(Array.isArray(directories) ? directories : [], '{{ dir_obj.alias }}');
+                    markMoveDuplicates(moveTree);
+                    renderMoveTree();
                 })
                 .catch(error => {
                     console.error('Error loading directories:', error);
-                    select.innerHTML = '<option value="">加载失败</option>';
+                    treeEl.innerHTML = '<div class="text-center text-muted py-3">目录加载失败</div>';
                 });
         }
+
+        // 搜索框实时过滤
+        (function bindMoveTreeSearch() {
+            const searchInput = document.getElementById('moveTreeSearch');
+            if (searchInput) {
+                searchInput.addEventListener('input', (e) => {
+                    moveTreeSearch = e.target.value;
+                    renderMoveTree();
+                });
+            }
+        })();
 
         // 执行移动操作
         function moveSelectedItems() {
