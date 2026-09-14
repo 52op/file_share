@@ -66,12 +66,36 @@ def get_app_path(tempdir=False):
         if tempdir:
             # 打包成单文件后程序运行生成的临时文件夹路径常用于取打包在EXE中的资源文件路径 如窗口图标等
             return sys._MEIPASS
+        # 服务进程：统一使用主程序目录，保证与 GUI 共用同一份配置/密钥/日志
+        if _SERVICE_MAIN_DIR:
+            return _SERVICE_MAIN_DIR
         # 程序运行目录
         return os.path.dirname(os.path.abspath(sys.executable))
 
     else:
         # 开发环境路径
         return os.path.dirname(os.path.abspath(__file__))
+
+
+# 服务进程主程序目录（--run-as-service 分支解析后设置；None=非服务进程）
+_SERVICE_MAIN_DIR = None
+
+
+def _resolve_service_main_dir():
+    """解析服务进程应使用的主程序目录。
+
+    标准单文件部署布局为: <主目录>/file_share_svc/file_share_svc.exe，
+    主配置 share_config.json、config.key 都在 <主目录>。此时服务进程必须
+    以 <主目录> 为运行根，否则会读写到 file_share_svc 子目录的独立配置，
+    导致前端网页修改设置不生效、密钥不一致。
+    服务版独立部署（配置就在自身目录）时返回自身目录。
+    """
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if os.path.basename(exe_dir) == "file_share_svc":
+        parent = os.path.dirname(exe_dir)
+        if parent and parent != exe_dir and os.path.isfile(os.path.join(parent, "share_config.json")):
+            return parent
+    return exe_dir
 
 
 def _append_svc_diag(msg):
@@ -1202,8 +1226,8 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.server_thread = None
             self.executor = None
 
-            # 设置工作目录为可执行文件所在目录
-            os.chdir(os.path.dirname(os.path.abspath(sys.executable)))
+            # 设置工作目录：服务进程统一使用主程序目录，与 GUI 共用同一份配置/密钥
+            os.chdir(_SERVICE_MAIN_DIR or os.path.dirname(os.path.abspath(sys.executable)))
 
             # 确保日志目录存在并可写
             log_dir = os.path.join(get_app_path(), "logs")
@@ -3919,6 +3943,18 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1].lower() == "--run-as-service":
         _append_svc_diag("进入 --run-as-service 服务分支")
+        # 服务进程统一使用主程序目录（file_share_svc 的上级目录），
+        # 保证与 GUI 共用同一份 share_config.json / config.key / 日志，前端设置实时生效。
+        _SERVICE_MAIN_DIR = _resolve_service_main_dir()
+        try:
+            os.chdir(_SERVICE_MAIN_DIR)
+            set_key_dir(_SERVICE_MAIN_DIR)
+            # Config.__init__ 在模块 import 时按 exe 目录缓存了 logo_dir，服务模式下重新对齐到主目录
+            config.logo_dir = os.path.join(_SERVICE_MAIN_DIR, "static", "logos")
+            os.makedirs(config.logo_dir, exist_ok=True)
+            _append_svc_diag(f"主程序目录: {_SERVICE_MAIN_DIR}")
+        except Exception as e:
+            _append_svc_diag(f"服务主目录对齐失败: {e}")
         if not PYWIN32_AVAILABLE:
             print(
                 "当前环境缺少 pywin32 组件（servicemanager/win32service*），无法以系统服务模式运行。"
