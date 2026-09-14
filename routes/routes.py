@@ -735,6 +735,7 @@ def check_password(alias):
             session['auth'] = True
             ip_limiter.reset(client_info)  # 登录成功后重置计数
             session['auth_time'] = current_time
+            stats.record_event(type='auth_ok', role='password', alias='', file='全局密码验证成功', **_req_client())
             return '', 200
         else:
             # 记录失败次数
@@ -748,6 +749,8 @@ def check_password(alias):
             session[f'auth_{alias}'] = True
             ip_limiter.reset(client_info)  # 登录成功后重置计数
             session[f'auth_time_{alias}'] = current_time
+            stats.record_event(type='auth_ok', role='password', alias=alias,
+                               file=f'目录密码验证成功: {alias}', **_req_client())
             return '', 200
         else:
             # 记录失败次数
@@ -834,7 +837,7 @@ def list_dir(dirname):
                 'mtime': _mtime,
             })
 
-    stats.record_view_dir(dirname)
+    stats.record_view_dir(dirname, role=_current_role(base_dir), alias=base_dir, **_req_client())
 
     return render_template('directory.html',
                            items=items,
@@ -1010,8 +1013,8 @@ def readme_files_api(alias):
 @check_auth_timestamp
 def preview_file(filepath):
     base_dir = filepath.split('/')[0]
-    # 预览访问计数（高频，仅计数不落明细）
-    stats.record_view(filepath)
+    # 预览访问明细（view 事件，含角色/IP/UA）
+    stats.record_view(filepath, role=_current_role(base_dir), alias=base_dir, **_req_client())
     dir_obj = get_dir_obj(base_dir)
     if not dir_obj:
         stats.record_event(type='view', role=_current_role(base_dir), alias=base_dir,
@@ -1874,6 +1877,7 @@ def admin_login():
             session['admin_time'] = time.time()
             ip_limiter.reset(client_info)
             flask_app.logger.info(f"{client_info} 管理员TOTP免密登录成功")
+            stats.record_event(type='auth_ok', role='admin', file='管理员登录成功(TOTP免密)', **_req_client())
             return redirect(request.referrer or url_for('index'))
         ip_limiter.add_failed_attempt(client_info)
         stats.record_event(type='auth_fail', role='anonymous', alias='', file='管理员登录失败(TOTP)', **_req_client())
@@ -1893,6 +1897,7 @@ def admin_login():
             session['admin_time'] = time.time()
             ip_limiter.reset(client_info)
             flask_app.logger.info(f"{client_info} 管理员登录成功(含TOTP)")
+            stats.record_event(type='auth_ok', role='admin', file='管理员登录成功(含TOTP)', **_req_client())
             return redirect(request.referrer or url_for('index'))
         ip_limiter.add_failed_attempt(client_info)
         stats.record_event(type='auth_fail', role='anonymous', alias='', file='管理员登录失败(TOTP)', **_req_client())
@@ -1904,6 +1909,7 @@ def admin_login():
     session['admin_time'] = time.time()
     ip_limiter.reset(client_info)  # 登录成功后重置计数
     flask_app.logger.info(f"{client_info} 管理员登录成功")
+    stats.record_event(type='auth_ok', role='admin', alias='', file='管理员登录成功', **_req_client())
     return redirect(request.referrer or url_for('index'))  # 优先跳转到来源页面
 
 
@@ -1943,6 +1949,8 @@ def dir_admin_login():
             session[f'dir_admin_time_{dirname}'] = time.time()
             ip_limiter.reset(client_info)
             flask_app.logger.info(f"{client_info} 目录管理员TOTP免密登录成功: {dirname}")
+            stats.record_event(type='auth_ok', role='dir_admin', alias=dirname,
+                               file=f'目录管理员登录成功(TOTP免密): {dirname}', **_req_client())
             return redirect(request.referrer or url_for('list_dir', dirname=dirname))
         ip_limiter.add_failed_attempt(client_info)
         stats.record_event(type='auth_fail', role='anonymous', alias=dirname,
@@ -1966,6 +1974,8 @@ def dir_admin_login():
             session[f'dir_admin_time_{dirname}'] = time.time()
             ip_limiter.reset(client_info)  # 登录成功后重置计数
             flask_app.logger.info(f"{client_info} 目录管理员登录成功(含TOTP): {dirname}")
+            stats.record_event(type='auth_ok', role='dir_admin', alias=dirname,
+                               file=f'目录管理员登录成功(含TOTP): {dirname}', **_req_client())
             return redirect(request.referrer or url_for('list_dir', dirname=dirname))
         ip_limiter.add_failed_attempt(client_info)
         stats.record_event(type='auth_fail', role='anonymous', alias=dirname,
@@ -1977,6 +1987,8 @@ def dir_admin_login():
     session[f'dir_admin_time_{dirname}'] = time.time()
     ip_limiter.reset(client_info)  # 登录成功后重置计数
     flask_app.logger.info(f"{client_info} 目录管理员登录成功: {dirname}")
+    stats.record_event(type='auth_ok', role='dir_admin', alias=dirname,
+                       file=f'目录管理员登录成功: {dirname}', **_req_client())
     return redirect(request.referrer or url_for('list_dir', dirname=dirname))
 
 
@@ -2436,6 +2448,8 @@ def verify_share(token):
         # 如果这个token还没有时间戳，初始化一个
         if f'share_{token}' not in password_change_timestamps['shares']:
             password_change_timestamps['shares'][token] = 0
+        stats.record_event(type='auth_ok', role='share', alias=share.alias,
+                           file=f'分享密码验证成功: {token}', **_req_client())
         return redirect(url_for('access_share', token=token))
 
     # 记录失败次数
