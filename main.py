@@ -1733,6 +1733,97 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 self.logger.info(f"删除防火墙规则 {name} 失败: {e}")
 
 
+def run_headless_server():
+    """无界面服务器模式（--headless-server）：不创建 GUI、不走 Windows 服务握手，
+    仅加载配置并启动 HTTP/HTTPS 服务器后阻塞运行。
+
+    用途：在 Windows 服务（SCM）因系统兼容问题无法使用 onedir 打包程序时
+    （如 Server 2012 R2 上调 StartServiceCtrlDispatcher 报 1063），改用
+    「计划任务开机自启 + 本模式」作为等效后台服务方案。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        config.load()
+    except Exception as e:
+        _append_svc_diag(f"headless 配置加载失败: {e}")
+        return 1
+    _append_svc_diag("headless 服务器模式启动")
+
+    try:
+        os.makedirs(os.path.join(get_app_path(), "logs"), exist_ok=True)
+    except Exception:
+        pass
+
+    servers = []  # [(名称, 运行函数)]
+
+    try:
+        if config.use_waitress:
+            from cheroot_server import (
+                create_cheroot_http_server,
+                create_cheroot_https_server,
+            )
+
+            http_server = create_cheroot_http_server(
+                flask_app,
+                host="0.0.0.0",
+                port=config.port,
+                threads=get_optimal_threads(),
+                connection_limit=1000,
+                channel_timeout=config.upload_timeout,
+            )
+            servers.append(("HTTP", http_server.run))
+
+            # HTTPS/SSL（Caddy 交给 Caddy 自身处理，这里跳过）
+            if config.ssl_enabled and not getattr(config, "caddy_enabled", False):
+                try:
+                    from ssl_manager import SSLCertificateManager
+
+                    ssl_manager = SSLCertificateManager(config)
+                    if ssl_manager.has_valid_certificate():
+                        cert_path = ssl_manager.get_cert_file_path()
+                        key_path = ssl_manager.get_key_file_path()
+                        if cert_path and key_path:
+                            https_server = create_cheroot_https_server(
+                                flask_app,
+                                host="0.0.0.0",
+                                port=config.ssl_port,
+                                cert_file=cert_path,
+                                key_file=key_path,
+                                threads=get_optimal_threads(),
+                                connection_limit=1000,
+                                channel_timeout=config.upload_timeout,
+                            )
+                            servers.append(("HTTPS", https_server.run))
+                except Exception as e:
+                    _append_svc_diag(f"headless HTTPS 启动跳过: {e}")
+        else:
+            from werkzeug.serving import make_server
+
+            http_server = make_server("0.0.0.0", config.port, flask_app)
+            servers.append(("HTTP", http_server.serve_forever))
+    except Exception as e:
+        _append_svc_diag(f"headless 服务器创建失败: {e}")
+        return 1
+
+    if config.auto_cleanup and not is_cleanup_running():
+        try:
+            start_cleanup_thread()
+        except Exception:
+            pass
+
+    _append_svc_diag("headless 服务器已创建: " + ", ".join(n for n, _ in servers))
+    executor = ThreadPoolExecutor(max_workers=max(1, len(servers)))
+    futures = [executor.submit(run) for _, run in servers]
+    try:
+        for future in futures:
+            future.result()  # 阻塞直到服务器退出
+    except KeyboardInterrupt:
+        pass
+    _append_svc_diag("headless 服务器退出")
+    return 0
+
+
 class FileShareApp:
     def handle_drop(self, event):
         files = self.root.tk.splitlist(event.data)
@@ -3977,6 +4068,18 @@ if __name__ == "__main__":
             traceback.print_exc()
             # 以非零码退出，便于 SCM 记录启动失败（1067）
             sys.exit(1)
+
+    elif len(sys.argv) > 1 and sys.argv[1].lower() == "--headless-server":
+        # 无界面服务器模式：统一主程序目录（与配置/密钥对齐），配合计划任务开机自启
+        _SERVICE_MAIN_DIR = _resolve_service_main_dir()
+        try:
+            os.chdir(_SERVICE_MAIN_DIR)
+            set_key_dir(_SERVICE_MAIN_DIR)
+            config.logo_dir = os.path.join(_SERVICE_MAIN_DIR, "static", "logos")
+            os.makedirs(config.logo_dir, exist_ok=True)
+        except Exception:
+            pass
+        sys.exit(run_headless_server())
 
     elif len(sys.argv) > 1:
         if not PYWIN32_AVAILABLE:
