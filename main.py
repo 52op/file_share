@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -3695,11 +3696,12 @@ class FileShareApp:
         # 子进程调用 StartServiceCtrlDispatcher 时会报 1063"无法连接服务控制器"，
         # 导致服务启动即失败（WIN32_EXIT_CODE=1067，事件日志无 python 记录）。
         svc_exe = self._get_service_exe_path()
-        if not svc_exe:
+        if not svc_exe and not self._ensure_service_dir():
             raise RuntimeError(
                 "未找到服务版可执行文件 file_share_svc\\file_share_svc.exe。\n"
                 "请将 onedir 服务版（file_share_svc 文件夹）与主程序放在同一目录后重试。"
             )
+        svc_exe = self._get_service_exe_path()
 
         win32serviceutil.InstallService(
             serviceName="FileShareService",
@@ -3747,6 +3749,30 @@ class FileShareApp:
         if os.path.isfile(candidate):
             return candidate
         return None
+
+    def _ensure_service_dir(self):
+        """确保服务版（onedir）已位于 exe 同目录。
+
+        单文件发布时，onedir 服务版内置于打包资源（_MEIPASS/file_share_svc）；
+        首次安装后台服务时自动释放到 <exe同目录>/file_share_svc，实现"一个 exe 即可部署"。
+        返回是否就绪（服务 exe 存在）。
+        """
+        if self._get_service_exe_path():
+            return True
+        if not getattr(sys, "frozen", False):
+            return False
+        try:
+            src = os.path.join(sys._MEIPASS, "file_share_svc")
+            if not os.path.isdir(src) or not os.path.isfile(os.path.join(src, "file_share_svc.exe")):
+                return False
+            base = os.path.dirname(os.path.abspath(sys.executable))
+            dst = os.path.join(base, "file_share_svc")
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            self.logger.info(f"已自动释放服务版到: {dst}")
+            return os.path.isfile(os.path.join(dst, "file_share_svc.exe"))
+        except Exception as e:
+            self.logger.error(f"释放服务版目录失败: {e}")
+            return False
 
     def force_delete_service(self):
         """强制删除服务的终极方案"""
