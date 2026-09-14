@@ -1744,9 +1744,10 @@ def run_headless_server():
     """无界面服务器模式（--headless-server）：不创建 GUI、不走 Windows 服务握手，
     仅加载配置并启动 HTTP/HTTPS 服务器后阻塞运行。
 
-    用途：在 Windows 服务（SCM）因系统兼容问题无法使用 onedir 打包程序时
-    （如 Server 2012 R2 上调 StartServiceCtrlDispatcher 报 1063），改用
-    「计划任务开机自启 + 本模式」作为等效后台服务方案。
+    用途：
+    - 作为 NSSM/计划任务托管的「后台服务」业务进程（服务握手由 NSSM 完成）
+    - Linux systemd 直接拉起本模式
+    与 GUI / pywin32 服务共用同一份主目录配置/密钥/日志，SSL(Caddy) 同样受支持。
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1763,8 +1764,25 @@ def run_headless_server():
         pass
 
     servers = []  # [(名称, 运行函数)]
+    caddy_manager = None
 
     try:
+        # SSL/Caddy 反代：优先 Caddy 托管 HTTPS（反代到 HTTP 端口），否则手动证书 HTTPS
+        caddy_active = bool(config.ssl_enabled and getattr(config, "caddy_enabled", False))
+        if caddy_active:
+            from caddy_manager import CaddyManager
+
+            caddy_manager = CaddyManager(config)
+            if caddy_manager.caddy_available():
+                if caddy_manager.ensure_started():
+                    _append_svc_diag("headless Caddy 反代已启动，HTTPS 由 Caddy 托管")
+                else:
+                    _append_svc_diag("headless Caddy 启动失败，仅提供 HTTP")
+                    caddy_manager = None
+            else:
+                _append_svc_diag("headless caddy.exe 不存在，仅提供 HTTP")
+                caddy_manager = None
+
         if config.use_waitress:
             from cheroot_server import (
                 create_cheroot_http_server,
@@ -1781,8 +1799,8 @@ def run_headless_server():
             )
             servers.append(("HTTP", http_server.run))
 
-            # HTTPS/SSL（Caddy 交给 Caddy 自身处理，这里跳过）
-            if config.ssl_enabled and not getattr(config, "caddy_enabled", False):
+            # 手动证书 HTTPS（非 Caddy 模式）
+            if config.ssl_enabled and caddy_manager is None:
                 try:
                     from ssl_manager import SSLCertificateManager
 
@@ -1811,6 +1829,11 @@ def run_headless_server():
             servers.append(("HTTP", http_server.serve_forever))
     except Exception as e:
         _append_svc_diag(f"headless 服务器创建失败: {e}")
+        if caddy_manager:
+            try:
+                caddy_manager.stop()
+            except Exception:
+                pass
         return 1
 
     if config.auto_cleanup and not is_cleanup_running():
@@ -1827,6 +1850,18 @@ def run_headless_server():
             future.result()  # 阻塞直到服务器退出
     except KeyboardInterrupt:
         pass
+    finally:
+        # 正常退出（Ctrl+C / 服务器停止）时清理 Caddy 与清理线程
+        if caddy_manager:
+            try:
+                caddy_manager.stop()
+            except Exception:
+                pass
+        try:
+            if is_cleanup_running():
+                stop_cleanup_thread()
+        except Exception:
+            pass
     _append_svc_diag("headless 服务器退出")
     return 0
 

@@ -356,6 +356,28 @@ class CaddyManager:
         except Exception:
             return False
 
+    def ensure_started(self):
+        """确保 Caddy 以最新配置运行（headless/服务模式使用）。
+
+        若检测到旧 Caddy 实例已在监听（可能由其他进程/上次服务遗留），
+        先通过 `caddy stop --config` 优雅停止，再按最新 Caddyfile 启动。
+        保证配置修改后重启服务时能生效。
+        """
+        if self.is_running():
+            try:
+                subprocess.run(
+                    [self.get_caddy_exe(), "stop", "--config", self.caddyfile_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                time.sleep(1)
+            except Exception:
+                pass
+            self.process = None
+        return self.start()
+
     # ---------- 一键下载 ----------
 
     def download_caddy(self, progress_cb=None, max_retries=3):
