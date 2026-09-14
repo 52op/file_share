@@ -18,6 +18,12 @@ _config_path = None
 _config = {}
 _lock = threading.Lock()
 
+# 事件类型分组（审计页按组展示）
+EVENT_TRANSFER = ('upload', 'download', 'share_download', 'batch')           # 传输
+EVENT_MANAGE = ('delete', 'rename', 'move', 'create', 'edit', 'log_admin')   # 管理操作
+EVENT_AUTH = ('auth_fail',)                                                   # 认证失败
+EVENT_HIGH_FREQ = ('view', 'view_dir')                                        # 高频访问（仅计数，不落明细）
+
 
 def _ensure():
     if _stats_dir is None:
@@ -57,7 +63,7 @@ def set_retention(days):
 
 
 def record_event(**kw):
-    """记录一条事件。kw: type/role/alias/file/size/ip/ua/ts"""
+    """记录一条事件。kw: type/role/alias/file/size/ip/ua/ts/target/detail"""
     _ensure()
     ts = int(kw.get("ts") or time.time())
     day_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
@@ -71,6 +77,10 @@ def record_event(**kw):
         "ip": kw.get("ip", ""),
         "ua": (kw.get("ua") or "")[:500],
     }
+    if kw.get("target"):
+        ev["target"] = kw["target"]
+    if kw.get("detail"):
+        ev["detail"] = str(kw["detail"])[:1000]
     with _lock:
         path = os.path.join(_stats_dir, f"stats-{day_str}.json")
         events = _load_day(day_str)
@@ -159,13 +169,92 @@ def query_events(start=None, end=None, etype=None, role=None, keyword=None, page
 
 def summary_counts(start=None, end=None):
     _ensure()
-    counts = {"upload": 0, "download": 0, "share_download": 0, "batch": 0, "total": 0}
+    keys = list(EVENT_TRANSFER) + list(EVENT_MANAGE) + list(EVENT_AUTH)
+    counts = {k: 0 for k in keys}
+    counts["total"] = 0
+    counts["total_bytes"] = 0
     for e in _range_events(_day_files(), start, end):
         t = e.get("type")
         if t in counts:
             counts[t] += 1
         counts["total"] += 1
+        counts["total_bytes"] += int(e.get("size") or 0)
     return counts
+
+
+# ---------- 高频访问计数（view / view_dir 不落明细，仅聚合计数） ----------
+
+def _counter_file(day_str):
+    return os.path.join(_stats_dir, f"counters-{day_str}.json")
+
+
+def _load_counter_path(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _counter_files():
+    out = []
+    for fn in os.listdir(_stats_dir):
+        if fn.startswith("counters-") and fn.endswith(".json"):
+            day_str = fn[len("counters-"):-5]
+            try:
+                datetime.strptime(day_str, "%Y-%m-%d")
+                out.append((day_str, os.path.join(_stats_dir, fn)))
+            except Exception:
+                continue
+    return out
+
+
+def _bump_counter(group, key, step=1):
+    _ensure()
+    day_str = datetime.now().strftime("%Y-%m-%d")
+    with _lock:
+        path = _counter_file(day_str)
+        cnt = _load_counter_path(path)
+        cnt.setdefault(group, {})[key] = int(cnt.get(group, {}).get(key, 0)) + step
+        _atomic_write(path, cnt)
+
+
+def record_view(key):
+    """文件预览/查看计数（不落明细）。key=文件路径"""
+    _bump_counter("views", key)
+
+
+def record_view_dir(key):
+    """目录访问计数（不落明细）。key=目录路径"""
+    _bump_counter("dirs", key)
+
+
+def view_summary(start=None, end=None, top=10):
+    _ensure()
+    views = {}
+    dirs = {}
+    for day_str, path in _counter_files():
+        try:
+            day_ts = datetime.strptime(day_str, "%Y-%m-%d").timestamp()
+        except Exception:
+            continue
+        if start and day_ts + 86400 < start:
+            continue
+        if end and day_ts > end:
+            continue
+        cnt = _load_counter_path(path)
+        for k, v in cnt.get("views", {}).items():
+            views[k] = views.get(k, 0) + v
+        for k, v in cnt.get("dirs", {}).items():
+            dirs[k] = dirs.get(k, 0) + v
+    return {
+        "view_total": sum(views.values()),
+        "dir_total": sum(dirs.values()),
+        "top_views": [{"file": k, "count": c}
+                      for k, c in sorted(views.items(), key=lambda x: -x[1])[:top]],
+        "top_dirs": [{"dir": k, "count": c}
+                     for k, c in sorted(dirs.items(), key=lambda x: -x[1])[:top]],
+    }
 
 
 def by_file(limit=10):
@@ -181,7 +270,7 @@ def by_file(limit=10):
 
 
 def delete_range(start=None, end=None):
-    """按时间范围删除事件（命中整天重写剔除，整片命中则删除该片）。返回删除条数。"""
+    """按时间范围删除事件（命中整天重写剔除，整片命中则删除该片）。返回删除条数（含计数文件）。"""
     _ensure()
     removed = 0
     with _lock:
@@ -204,6 +293,18 @@ def delete_range(start=None, end=None):
                     os.remove(path)
                 except OSError:
                     pass
+        # 命中天数的访问计数文件一并处理（整片删）
+        for day_str, path in _counter_files():
+            try:
+                day_ts = datetime.strptime(day_str, "%Y-%m-%d").timestamp()
+            except Exception:
+                continue
+            if (not start or day_ts + 86400 > start) and (not end or day_ts < end):
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    pass
     return removed
 
 
@@ -211,7 +312,7 @@ def clear_all():
     _ensure()
     removed = 0
     with _lock:
-        for _, path in _day_files():
+        for _, path in list(_day_files()) + list(_counter_files()):
             try:
                 os.remove(path)
                 removed += 1
