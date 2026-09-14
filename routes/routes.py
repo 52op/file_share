@@ -739,6 +739,7 @@ def check_password(alias):
         else:
             # 记录失败次数
             ip_limiter.add_failed_attempt(client_info)
+            stats.record_event(type='auth_fail', role='anonymous', alias='', file='全局密码错误', **_req_client())
 
     else:
         dir_obj = get_dir_obj(alias)
@@ -751,6 +752,8 @@ def check_password(alias):
         else:
             # 记录失败次数
             ip_limiter.add_failed_attempt(client_info)
+            stats.record_event(type='auth_fail', role='anonymous', alias=alias,
+                               file=f'目录密码错误: {alias}', **_req_client())
 
     return '', 403
 
@@ -830,6 +833,8 @@ def list_dir(dirname):
                 'raw_size': _raw_size,
                 'mtime': _mtime,
             })
+
+    stats.record_view_dir(dirname)
 
     return render_template('directory.html',
                            items=items,
@@ -1005,16 +1010,24 @@ def readme_files_api(alias):
 @check_auth_timestamp
 def preview_file(filepath):
     base_dir = filepath.split('/')[0]
+    # 预览访问计数（高频，仅计数不落明细）
+    stats.record_view(filepath)
     dir_obj = get_dir_obj(base_dir)
     if not dir_obj:
+        stats.record_event(type='view', role=_current_role(base_dir), alias=base_dir,
+                           file=filepath, detail='目录不存在', **_req_client())
         return '目录不存在', 404
     access_resp = require_dir_access(dir_obj, base_dir=base_dir, is_api=request.headers.get('X-Requested-With') == 'XMLHttpRequest')
     if access_resp:
+        stats.record_event(type='view', role=_current_role(base_dir), alias=base_dir,
+                           file=filepath, detail='访问被拒', **_req_client())
         return access_resp
 
     # 验证和获取文件路径
     result = validate_file_path(filepath)
     if isinstance(result, tuple):
+        stats.record_event(type='view', role=_current_role(base_dir), alias=base_dir,
+                           file=filepath, detail=result[0], **_req_client())
         return result if not request.is_xhr else jsonify({'error': result[0]}), result[1]
     full_path = result
 
@@ -1029,6 +1042,8 @@ def preview_file(filepath):
             mime_type.startswith(('image/', 'video/', 'audio/')) or mime_type == 'application/pdf') or is_text_file(
             full_path)):
         error_msg = '不支持预览此类型文件'
+        stats.record_event(type='view', role=_current_role(base_dir), alias=base_dir,
+                           file=filepath, detail=error_msg, **_req_client())
         return jsonify({'error': error_msg}) if is_ajax else (error_msg, 415)
 
     # 如果是AJAX请求(来自workspace.js),返回JSON格式
@@ -1037,6 +1052,8 @@ def preview_file(filepath):
             content = read_text_file(full_path)
             return jsonify({'content': content})
         except Exception as e:
+            stats.record_event(type='view', role=_current_role(base_dir), alias=base_dir,
+                               file=filepath, detail='读取失败', **_req_client())
             return jsonify({'error': str(e)}), 500
 
     # 常规预览请求处理
@@ -1145,6 +1162,9 @@ def save_file(filepath):
     try:
         with open(full_path, 'w', encoding='utf-8') as f:
             f.write(content)
+        stats.record_event(type='edit', role=_current_role(filepath.split('/')[0]),
+                           alias=filepath.split('/')[0], file=filepath,
+                           size=len(content.encode('utf-8', errors='replace')), **_req_client())
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': f'保存失败: {str(e)}'}), 500
@@ -1458,6 +1478,8 @@ def make_directory(alias):
     # 记录新建文件夹操作
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 在 {check_dir} 新建文件夹: {folder_name}")
+    stats.record_event(type='create', role=_current_role(alias), alias=alias,
+                       file=folder_name, **_req_client())
     return "Success", 200
 
 
@@ -1522,6 +1544,8 @@ def create_text_file(alias):
     # 记录新建文件操作
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 在 {check_dir} 新建文件: {file_name}")
+    stats.record_event(type='create', role=_current_role(alias), alias=alias,
+                       file=file_name, **_req_client())
     return "Success", 200
 
 
@@ -1563,6 +1587,7 @@ def delete_item(alias):
         client_info = get_client_info()
         op_path = os.path.join(dir_obj.path, sub_path)
         flask_app.logger.info(f"{client_info}在 {op_path} 删除了{pre_name}: {name}")
+        stats.record_event(type='delete', role=_current_role(alias), alias=alias, file=name, **_req_client())
         return "Success", 200
     # except OSError as e:   # 返回详细错误写法
     #    return str(e), 400
@@ -1639,6 +1664,17 @@ def batch_delete_items(alias):
             else:
                 errors.append(f'{item_path}: 删除失败')
 
+    batch_names = []
+    try:
+        for it in request.json.get('items', []):
+            batch_names.append(str(it.get('name', '')))
+    except Exception:
+        pass
+    stats.record_event(
+        type='delete', role=_current_role(alias), alias=alias,
+        file=f"{success} 项批量删除（失败 {failed}）",
+        detail='、'.join(batch_names[:30]) + (f' 等共{len(batch_names)}项' if len(batch_names) > 30 else ''),
+        **_req_client())
     return jsonify({
         'success': success,
         'failed': failed,
@@ -1686,6 +1722,8 @@ def rename_item(alias):
         client_info = get_client_info()
         op_path = os.path.join(dir_obj.path, sub_path)
         flask_app.logger.info(f"{client_info} 在 {op_path} 重命名: {old_name} -> {new_name}")
+        stats.record_event(type='rename', role=_current_role(alias), alias=alias,
+                           file=old_name, target=new_name, **_req_client())
         return "Success", 200
     except OSError as e:
         return str(e), 400
@@ -1792,6 +1830,8 @@ def move_items(alias):
             shutil.move(source_path, dest_path)
             flask_app.logger.info(f"{client_info} 移动了{item_name} 从 {current_path} 到 {target_path}")
 
+        stats.record_event(type='move', role=_current_role(alias), alias=alias,
+                           file=f"{len(items)} 项移动", target=target_path, **_req_client())
         return "Success", 200
 
     except Exception as e:
@@ -1836,11 +1876,13 @@ def admin_login():
             flask_app.logger.info(f"{client_info} 管理员TOTP免密登录成功")
             return redirect(request.referrer or url_for('index'))
         ip_limiter.add_failed_attempt(client_info)
+        stats.record_event(type='auth_fail', role='anonymous', alias='', file='管理员登录失败(TOTP)', **_req_client())
         flask_app.logger.warning(f"{client_info} 管理员TOTP免密登录失败")
         return 'Invalid verification code', 401
 
     if password != config.admin_password:
         ip_limiter.add_failed_attempt(client_info)
+        stats.record_event(type='auth_fail', role='anonymous', alias='', file='管理员登录失败(密码)', **_req_client())
         flask_app.logger.warning(f"{client_info} 管理员登录失败")
         return 'Invalid password', 401
 
@@ -1853,6 +1895,7 @@ def admin_login():
             flask_app.logger.info(f"{client_info} 管理员登录成功(含TOTP)")
             return redirect(request.referrer or url_for('index'))
         ip_limiter.add_failed_attempt(client_info)
+        stats.record_event(type='auth_fail', role='anonymous', alias='', file='管理员登录失败(TOTP)', **_req_client())
         flask_app.logger.warning(f"{client_info} 管理员TOTP验证失败")
         return 'Invalid verification code', 401
 
@@ -1902,6 +1945,8 @@ def dir_admin_login():
             flask_app.logger.info(f"{client_info} 目录管理员TOTP免密登录成功: {dirname}")
             return redirect(request.referrer or url_for('list_dir', dirname=dirname))
         ip_limiter.add_failed_attempt(client_info)
+        stats.record_event(type='auth_fail', role='anonymous', alias=dirname,
+                           file=f'目录管理员登录失败(TOTP): {dirname}', **_req_client())
         flask_app.logger.warning(f"{client_info} 目录管理员TOTP免密登录失败: {dirname}")
         return 'Invalid verification code', 401
 
@@ -1909,6 +1954,8 @@ def dir_admin_login():
     if not (dir_obj.admin_password and (password == dir_obj.admin_password or password == config.admin_password)):
         # 记录失败次数
         ip_limiter.add_failed_attempt(client_info)
+        stats.record_event(type='auth_fail', role='anonymous', alias=dirname,
+                           file=f'目录管理员登录失败(密码): {dirname}', **_req_client())
         flask_app.logger.warning(f"{client_info} 目录管理员登录失败: {dirname}")
         return 'Invalid password', 401
 
@@ -1921,6 +1968,8 @@ def dir_admin_login():
             flask_app.logger.info(f"{client_info} 目录管理员登录成功(含TOTP): {dirname}")
             return redirect(request.referrer or url_for('list_dir', dirname=dirname))
         ip_limiter.add_failed_attempt(client_info)
+        stats.record_event(type='auth_fail', role='anonymous', alias=dirname,
+                           file=f'目录管理员登录失败(TOTP): {dirname}', **_req_client())
         flask_app.logger.warning(f"{client_info} 目录管理员TOTP验证失败: {dirname}")
         return 'Invalid verification code', 401
 
@@ -2391,6 +2440,8 @@ def verify_share(token):
 
     # 记录失败次数
     ip_limiter.add_failed_attempt(client_info)
+    stats.record_event(type='auth_fail', role='share', alias=share.alias,
+                       file=f'分享密码错误: {token}', **_req_client())
     return render_template('share_password.html', token=token, error='密码错误', pageMark='访问密码')
 
 
