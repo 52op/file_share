@@ -30,6 +30,7 @@ from main import flask_app, config, format_file_size, partial_download, send_fil
 from share_links import ShareManager   # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
 from firewall import IPLimiter
 import pyotp
+import stats
 
 
 def get_dir_obj(alias):
@@ -118,6 +119,24 @@ def generate_upload_file_id(file_size, last_modified, rel_path, prefix):
 
 # 实例化 share_links/share_manager.py 里面的 ShareManager
 share_manager = ShareManager()    # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
+
+
+def _current_role(alias=None):
+    """审计角色：admin / dir_admin / password / anonymous（无登录体系，角色为标签）"""
+    if session.get('admin'):
+        return 'admin'
+    if alias and session.get(f'dir_admin_{alias}'):
+        return 'dir_admin'
+    if alias and session.get(f'auth_{alias}'):
+        return 'password'
+    return 'anonymous'
+
+
+def _req_client():
+    return {
+        'ip': request.remote_addr or '',
+        'ua': (request.user_agent.string or '') if request.user_agent else '',
+    }
 ip_limiter = IPLimiter()
 
 # 清理线程相关变量
@@ -1092,6 +1111,11 @@ def batch_download():
 
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 在 {base_dir} 打包下载了多个文件")
+    stats.record_event(
+        type='batch', role=_current_role(base_dir), alias=base_dir,
+        file=f"{len(files)} 个文件打包下载",
+        size=os.path.getsize(temp_zip.name) if os.path.exists(temp_zip.name) else 0,
+        **_req_client())
     response = send_file(
         temp_zip.name,
         mimetype='application/zip',
@@ -1159,6 +1183,10 @@ def download(filepath):
 
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 下载了{file_path}")
+    stats.record_event(
+        type='download', role=_current_role(dirname), alias=dirname,
+        file=filename, size=os.path.getsize(file_path) if os.path.isfile(file_path) else 0,
+        **_req_client())
 
     content_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
     response = send_file(
@@ -1271,6 +1299,9 @@ def upload_file(alias):
                 _save_upload_sessions()
                 client_info = get_client_info()
                 flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
+                stats.record_event(
+                    type='upload', role=_current_role(alias), alias=alias,
+                    file=safe_rel, size=file_size, **_req_client())
                 return jsonify({'file_id': file_id, 'uploaded_chunks': 1}), 200
 
             temp_dir = info['temp_dir']
@@ -1300,6 +1331,9 @@ def upload_file(alias):
                     _save_upload_sessions()
                     client_info = get_client_info()
                     flask_app.logger.info(f"{client_info} 上传文件: {safe_rel} 到了{target_dir}")
+                    stats.record_event(
+                        type='upload', role=_current_role(alias), alias=alias,
+                        file=safe_rel, size=file_size, **_req_client())
                     return jsonify({'file_id': file_id, 'uploaded_chunks': chunks}), 200
                 except Exception as e:
                     try:
@@ -2421,6 +2455,11 @@ def download_share_file(token, filepath):
     filename = os.path.basename(file_path)
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 下载了分享文件: {filename}")
+    share_manager.increment_download(token)
+    stats.record_event(
+        type='share_download', role='share', alias=share.alias, file=filename,
+        size=os.path.getsize(file_path) if os.path.isfile(file_path) else 0,
+        **_req_client())
 
     return send_file(
         file_path,
@@ -2444,6 +2483,11 @@ def download_share(token):
         temp_zip = share_manager.create_zip_from_dir(share.path)
         client_info = get_client_info()
         flask_app.logger.info(f"{client_info} 打包下载了整个目录 {share.name}")
+        share_manager.increment_download(token)
+        stats.record_event(
+            type='share_download', role='share', alias=share.alias,
+            file=f"{share.name}.zip", size=os.path.getsize(temp_zip) if os.path.exists(temp_zip) else 0,
+            **_req_client())
         return send_file(
             temp_zip,
             as_attachment=True,
@@ -2452,6 +2496,11 @@ def download_share(token):
             conditional=True
         )
     else:
+        share_manager.increment_download(token)
+        stats.record_event(
+            type='share_download', role='share', alias=share.alias, file=share.name,
+            size=os.path.getsize(share.path) if os.path.isfile(share.path) else 0,
+            **_req_client())
         return send_file(
             share.path,
             as_attachment=True,
@@ -2495,6 +2544,12 @@ def share_batch_download(token):
 
     client_info = get_client_info()
     flask_app.logger.info(f"{client_info} 打包下载了多个文件")
+    share_manager.increment_download(token)
+    stats.record_event(
+        type='batch', role='share', alias=share.alias,
+        file=f"{len(items)} 个文件打包下载",
+        size=os.path.getsize(temp_zip.name) if os.path.exists(temp_zip.name) else 0,
+        **_req_client())
 
     return send_file(
         temp_zip.name,
@@ -2778,7 +2833,91 @@ def clear_session(token, security_code):
     return 'invalid security code'
 
 
+def _parse_range(arg_start, arg_end):
+    """解析 YYYY-MM-DD 范围 → 时间戳(秒)。返回 (start, end)"""
+    start = end = None
+    try:
+        if arg_start:
+            start = datetime.strptime(arg_start, '%Y-%m-%d').timestamp()
+        if arg_end:
+            end = datetime.strptime(arg_end + ' 23:59:59', '%Y-%m-%d %H:%M:%S').timestamp()
+    except Exception:
+        start = end = None
+    return start, end
+
+
 # web管理私有分享链接相关
+@flask_app.route('/stats')
+@check_auth_timestamp
+def stats_page():
+    """上传/下载审计页（仅超级管理员）"""
+    if not session.get('admin'):
+        return redirect(url_for('index'))
+    start, end = _parse_range(request.args.get('start'), request.args.get('end'))
+    etype = request.args.get('type') or None
+    role = request.args.get('role') or None
+    keyword = request.args.get('q') or None
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        size = min(200, max(10, int(request.args.get('size', 50))))
+    except (TypeError, ValueError):
+        size = 50
+
+    data = stats.query_events(start=start, end=end, etype=etype, role=role,
+                              keyword=keyword, page=page, size=size)
+    counts = stats.summary_counts(start, end)
+    top = stats.by_file(10)
+    return render_template('stats.html', pageMark='访问统计',
+                           events=data['events'], total=data['total'],
+                           page=data['page'], size=data['size'],
+                           counts=counts, top=top,
+                           q=request.args.get('q') or '', etype=etype or '',
+                           role=role or '',
+                           start=request.args.get('start') or '',
+                           end=request.args.get('end') or '',
+                           retention=stats.get_retention())
+
+
+@flask_app.route('/stats/retention', methods=['POST'])
+@check_auth_timestamp
+def stats_set_retention():
+    if not session.get('admin'):
+        return jsonify({'error': 'forbidden'}), 403
+    try:
+        days = int(request.json.get('days') or request.form.get('days') or 90)
+    except (TypeError, ValueError):
+        return jsonify({'error': '无效的保留天数'}), 400
+    stats.set_retention(max(1, days))
+    stats.record_event(type='log_admin', role='admin', file=f'设置日志保留期 {days} 天', **_req_client())
+    return jsonify({'ok': True, 'retention': stats.get_retention()})
+
+
+@flask_app.route('/stats/delete', methods=['POST'])
+@check_auth_timestamp
+def stats_delete_range():
+    if not session.get('admin'):
+        return jsonify({'error': 'forbidden'}), 403
+    start, end = _parse_range(request.json.get('start'), request.json.get('end'))
+    removed = stats.delete_range(start=start, end=end)
+    stats.record_event(type='log_admin', role='admin',
+                       file=f'删除日志范围 {request.json.get("start") or ""} ~ {request.json.get("end") or ""}',
+                       **_req_client())
+    return jsonify({'ok': True, 'removed': removed})
+
+
+@flask_app.route('/stats/clear', methods=['POST'])
+@check_auth_timestamp
+def stats_clear():
+    if not session.get('admin'):
+        return jsonify({'error': 'forbidden'}), 403
+    removed = stats.clear_all()
+    stats.record_event(type='log_admin', role='admin', file='清空全部日志', **_req_client())
+    return jsonify({'ok': True, 'removed': removed})
+
+
 @flask_app.route('/share-manager')
 @flask_app.route('/share-manager/<path>')
 def share_manager_page(path=''):

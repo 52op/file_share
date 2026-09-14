@@ -1,0 +1,215 @@
+{% extends "header.html" %}
+{% block content %}
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h4 class="mb-0"><i class="bi bi-graph-up me-2"></i>访问统计 / 日志审计</h4>
+            <div class="text-muted small">
+                近 30 天：上传 {{ counts.upload }} 次 · 下载 {{ counts.download }} 次 · 分享下载 {{ counts.share_download }} 次 · 批量 {{ counts.batch }} 次
+            </div>
+        </div>
+
+        <!-- 筛选栏 -->
+        <form method="get" action="/stats" class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+                <label class="form-label small mb-1">开始日期</label>
+                <input type="date" class="form-control form-control-sm" name="start" value="{{ start }}">
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-1">结束日期</label>
+                <input type="date" class="form-control form-control-sm" name="end" value="{{ end }}">
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-1">类型</label>
+                <select class="form-select form-select-sm" name="type">
+                    <option value="">全部</option>
+                    <option value="upload" {% if etype == 'upload' %}selected{% endif %}>上传</option>
+                    <option value="download" {% if etype == 'download' %}selected{% endif %}>下载</option>
+                    <option value="share_download" {% if etype == 'share_download' %}selected{% endif %}>分享下载</option>
+                    <option value="batch" {% if etype == 'batch' %}selected{% endif %}>批量</option>
+                    <option value="log_admin" {% if etype == 'log_admin' %}selected{% endif %}>管理操作</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-1">角色</label>
+                <select class="form-select form-select-sm" name="role">
+                    <option value="">全部</option>
+                    <option value="admin" {% if role == 'admin' %}selected{% endif %}>管理员</option>
+                    <option value="dir_admin" {% if role == 'dir_admin' %}selected{% endif %}>目录管理员</option>
+                    <option value="password" {% if role == 'password' %}selected{% endif %}>密码访问</option>
+                    <option value="share" {% if role == 'share' %}selected{% endif %}>分享</option>
+                    <option value="anonymous" {% if role == 'anonymous' %}selected{% endif %}>匿名</option>
+                </select>
+            </div>
+            <div class="col-auto">
+                <label class="form-label small mb-1">关键字</label>
+                <input type="text" class="form-control form-control-sm" name="q" value="{{ q }}" placeholder="文件路径/目录/IP">
+            </div>
+            <div class="col-auto">
+                <button class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>筛选</button>
+                <a class="btn btn-sm btn-outline-secondary" href="/stats"><i class="bi bi-x-lg me-1"></i>重置</a>
+            </div>
+        </form>
+
+        <!-- 事件主表 -->
+        <div class="table-responsive mb-3">
+            <table class="table table-sm table-hover align-middle">
+                <thead class="table-light">
+                <tr>
+                    <th>时间</th>
+                    <th>类型</th>
+                    <th>角色</th>
+                    <th>文件路径</th>
+                    <th class="text-end">大小</th>
+                    <th>目录</th>
+                    <th>来源IP</th>
+                    <th>User-Agent</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for ev in events %}
+                    <tr>
+                        <td class="text-nowrap" data-ts="{{ ev.ts }}">{{ ev.ts|int }}</td>
+                        <td><span class="badge {{ {'upload':'bg-primary','download':'bg-success','share_download':'bg-info text-dark','batch':'bg-warning text-dark','log_admin':'bg-secondary'}.get(ev.type, 'bg-light text-dark') }}">{{ {'upload':'上传','download':'下载','share_download':'分享下载','batch':'批量','log_admin':'管理'}.get(ev.type, ev.type) }}</span></td>
+                        <td>{{ {'admin':'管理员','dir_admin':'目录管理员','password':'密码访问','share':'分享','anonymous':'匿名'}.get(ev.role, ev.role) }}</td>
+                        <td class="text-truncate" style="max-width:260px" title="{{ ev.file }}">{{ ev.file }}</td>
+                        <td class="text-end text-muted small">{{ ev.size }}</td>
+                        <td class="text-muted small">{{ ev.alias }}</td>
+                        <td class="text-nowrap small">{{ ev.ip }}</td>
+                        <td class="text-truncate text-muted" style="max-width:180px" title="{{ ev.ua }}">{{ ev.ua }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="8" class="text-center text-muted py-4">暂无记录</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 分页 -->
+        {% if total > size %}
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <span class="text-muted small">共 {{ total }} 条记录</span>
+                <div class="btn-group btn-group-sm">
+                    {% if page > 1 %}
+                        <a class="btn btn-outline-secondary" href="?page={{ page - 1 }}&start={{ start }}&end={{ end }}&type={{ etype }}&role={{ role }}&q={{ q }}">上一页</a>
+                    {% endif %}
+                    <span class="btn btn-outline-secondary disabled">第 {{ page }} 页</span>
+                    {% if page * size < total %}
+                        <a class="btn btn-outline-secondary" href="?page={{ page + 1 }}&start={{ start }}&end={{ end }}&type={{ etype }}&role={{ role }}&q={{ q }}">下一页</a>
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
+
+        <div class="row g-3">
+            <!-- Top 被下载文件 -->
+            <div class="col-lg-5">
+                <div class="card">
+                    <div class="card-header"><i class="bi bi-trophy me-1"></i>Top 被下载文件</div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm mb-0">
+                            <tbody>
+                            {% for item in top %}
+                                <tr>
+                                    <td class="text-truncate" style="max-width:280px" title="{{ item.file }}">{{ item.file }}</td>
+                                    <td class="text-end"><span class="badge bg-secondary">{{ item.count }} 次</span></td>
+                                </tr>
+                            {% else %}
+                                <tr><td class="text-center text-muted py-3">暂无数据</td></tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 日志管理 -->
+            <div class="col-lg-7">
+                <div class="card">
+                    <div class="card-header"><i class="bi bi-sliders me-1"></i>日志管理</div>
+                    <div class="card-body">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-auto">
+                                <label class="form-label small mb-1">保留天数</label>
+                                <input type="number" class="form-control form-control-sm" id="retentionDays" value="{{ retention }}" min="1" style="width:110px">
+                            </div>
+                            <div class="col-auto">
+                                <button class="btn btn-sm btn-outline-primary" id="saveRetentionBtn"><i class="bi bi-save me-1"></i>保存</button>
+                            </div>
+                        </div>
+                        <hr class="my-3">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-auto">
+                                <label class="form-label small mb-1">删除范围-开始</label>
+                                <input type="date" class="form-control form-control-sm" id="delStart">
+                            </div>
+                            <div class="col-auto">
+                                <label class="form-label small mb-1">删除范围-结束</label>
+                                <input type="date" class="form-control form-control-sm" id="delEnd">
+                            </div>
+                            <div class="col-auto">
+                                <button class="btn btn-sm btn-outline-danger" id="deleteRangeBtn"><i class="bi bi-trash me-1"></i>删除范围内日志</button>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button class="btn btn-sm btn-danger" id="clearAllBtn"><i class="bi bi-eraser me-1"></i>清空全部日志</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function fmtSize(n) {
+            n = Number(n) || 0;
+            if (n <= 0) return '-';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+            return n.toFixed(i ? 1 : 0) + ' ' + units[i];
+        }
+        function fmtTime(ts) {
+            const d = new Date(Number(ts) * 1000);
+            const p = x => String(x).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+        }
+        document.querySelectorAll('td[data-ts]').forEach(td => { td.textContent = fmtTime(td.dataset.ts); });
+        document.querySelectorAll('td[data-ts]').forEach(() => {});
+        // 大小列格式化（第5列）
+        document.querySelectorAll('tbody tr').forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length >= 5) cells[4].textContent = fmtSize(cells[4].textContent);
+        });
+
+        async function postJson(url, data) {
+            const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            if (!resp.ok) { const t = await resp.text().catch(() => ''); alert('操作失败：' + t); return null; }
+            return resp.json();
+        }
+
+        document.getElementById('saveRetentionBtn').addEventListener('click', async () => {
+            const days = document.getElementById('retentionDays').value;
+            if (!days || Number(days) < 1) { alert('请输入有效的保留天数'); return; }
+            const res = await postJson('/stats/retention', { days: Number(days) });
+            if (res && res.ok) { alert('保留期已设为 ' + res.retention + ' 天'); location.reload(); }
+        });
+
+        document.getElementById('deleteRangeBtn').addEventListener('click', async () => {
+            const s = document.getElementById('delStart').value, e = document.getElementById('delEnd').value;
+            if (!s && !e) { alert('请选择删除范围'); return; }
+            if (!confirm(`确定删除 ${s || '最早'} ~ ${e || '今天'} 的日志吗？此操作不可恢复。`)) return;
+            const res = await postJson('/stats/delete', { start: s, end: e });
+            if (res && res.ok) { alert(`已删除 ${res.removed} 条日志`); location.reload(); }
+        });
+
+        document.getElementById('clearAllBtn').addEventListener('click', async () => {
+            if (!confirm('确定清空全部日志吗？此操作不可恢复，并会被记录为管理操作。')) return;
+            if (!confirm('再次确认：真的要清空全部日志？')) return;
+            const res = await postJson('/stats/clear', {});
+            if (res && res.ok) { alert(`已清空 ${res.removed} 个日志分片`); location.reload(); }
+        });
+    </script>
+{% endblock %}

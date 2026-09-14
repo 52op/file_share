@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from datetime import datetime, timedelta
 import secrets
 import zipfile
@@ -19,6 +20,7 @@ class ShareLink:
         self.expire_time = datetime.now() + timedelta(days=int(expire_days)) if int(expire_days) > 0 else None
         self.is_dir = os.path.isdir(path)
         self.size = self.calculate_size()
+        self.download_count = 0  # 分享下载次数统计
 
     def calculate_size(self):
         """Calculate size for both files and directories"""
@@ -65,6 +67,7 @@ class ShareManager:
     def __init__(self):
         self.share_links = {}
         self.share_file = 'share_links.json'
+        self._lock = threading.Lock()  # 计数等写操作的并发保护
         self.load()
 
     def save(self):
@@ -93,6 +96,7 @@ class ShareManager:
                             share.expire_time = datetime.fromisoformat(share_data['expire_time'])
                         share.is_dir = share_data['is_dir']
                         share.size = share_data['size']     # 从配置文件取大小
+                        share.download_count = int(share_data.get('download_count', 0) or 0)  # 兼容旧数据
                         # share.size = share.calculate_size()   # 每次重新计算大小，文件多会增加服务器压力
                         self.share_links[token] = share
             except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -126,6 +130,19 @@ class ShareManager:
     def get_share_no_reload(self, token):
         # 直接返回 share_links 字典中的对象，不调用 reload()
         return self.share_links.get(token)
+
+    def increment_download(self, token):
+        """分享下载次数 +1（线程安全：锁内 reload→修改→save）"""
+        with self._lock:
+            share = self.share_links.get(token)
+            if not share:
+                self.load()
+                share = self.share_links.get(token)
+            if not share:
+                return None
+            share.download_count = int(getattr(share, 'download_count', 0) or 0) + 1
+            self.save()
+            return share.download_count
 
     def remove_expired(self):
         now = datetime.now()
