@@ -786,18 +786,30 @@ def list_dir(dirname):
         item_path = os.path.join(current_path, item)
         rel_path = os.path.join(dirname, item).replace('\\', '/')
 
+        try:
+            _stat = os.stat(item_path)
+            _raw_size = _stat.st_size
+            _mtime = int(_stat.st_mtime)
+        except OSError:
+            _raw_size = 0
+            _mtime = 0
+
         if os.path.isdir(item_path):
             items.append({
                 'name': item,
                 'is_dir': True,
-                'path': rel_path
+                'path': rel_path,
+                'raw_size': 0,
+                'mtime': _mtime,
             })
         else:
             items.append({
                 'name': item,
                 'is_dir': False,
-                'size': format_file_size(os.path.getsize(item_path)),
-                'path': rel_path
+                'size': format_file_size(_raw_size),
+                'path': rel_path,
+                'raw_size': _raw_size,
+                'mtime': _mtime,
             })
 
     return render_template('directory.html',

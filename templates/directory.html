@@ -404,9 +404,25 @@
             </button>
         </div>
 
+        <!-- 列表排序工具栏 -->
+        <div class="d-flex align-items-center gap-2 mb-2 flex-wrap" id="listSortBar">
+            <span class="text-muted small">排序：</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="排序">
+                <button type="button" class="btn btn-outline-secondary sort-btn active" data-sort="name">名称</button>
+                <button type="button" class="btn btn-outline-secondary sort-btn" data-sort="type">类型</button>
+                <button type="button" class="btn btn-outline-secondary sort-btn" data-sort="size">大小</button>
+                <button type="button" class="btn btn-outline-secondary sort-btn" data-sort="mtime">时间</button>
+            </div>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="sortOrderBtn"
+                    title="切换升/降序"><i class="bi bi-sort-up"></i></button>
+        </div>
+
         <div class="list-group">
             {% for item in items %}
-                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                     data-name="{{ item.name }}" data-is-dir="{{ item.is_dir|tojson|safe }}"
+                     data-size="{{ item.raw_size }}" data-mtime="{{ item.mtime }}"
+                     data-type="{{ 'dir' if item.is_dir else (item.name.rsplit('.', 1)[-1].lower() if '.' in item.name else 'file') }}">
                     <div class="d-flex align-items-center">
                         <input type="checkbox" class="form-check-input me-2 item-checkbox"
                                data-path="{{ item.path }}" data-name="{{ item.name }}"
@@ -1627,6 +1643,7 @@
         // 页面级拖拽：拖入文件/文件夹时打开上传对话框并填充列表
         let dragDepth = 0;
         document.addEventListener('dragenter', (e) => {
+            if (!hasAdminPermission) return;  // 无权限不接收文件拖拽
             if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
                 e.preventDefault();
                 dragDepth++;
@@ -1634,6 +1651,7 @@
             }
         });
         document.addEventListener('dragover', (e) => {
+            if (!hasAdminPermission) return;
             if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'copy';
@@ -1653,6 +1671,10 @@
             dragDepth = 0;
             document.body.classList.remove('page-dragging');
             if (!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'))) {
+                return;
+            }
+            if (!hasAdminPermission) {
+                showToast('需要管理员权限才能上传', 'danger');
                 return;
             }
             extractDroppedFiles(e.dataTransfer).then((tasks) => {
@@ -1824,6 +1846,10 @@
         // 打开上传对话框并填充文件/文件夹列表
         function openUploadWithTasks(tasks) {
             if (!tasks?.length) return;
+            if (!hasAdminPermission) {
+                showToast('需要管理员权限才能上传', 'danger');
+                return;
+            }
             if (window._currentUpload?.running && window._appendUploadTasks) {
                 window._appendUploadTasks(tasks).catch(error => {
                     console.error('追加上传任务失败:', error);
@@ -1909,6 +1935,36 @@
         }
 
         // 更新某个任务的状态文本（状态可含 <i> 图标，因此用 innerHTML）
+        // 顶部轻提示（toast），用于权限/操作结果等非阻断反馈
+        let _toastTimer = null;
+        function showToast(msg, type = 'info') {
+            let el = document.getElementById('globalToast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'globalToast';
+                el.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:1080;'
+                    + 'padding:10px 18px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.18);'
+                    + 'font-size:14px;max-width:80vw;display:none;';
+                document.body.appendChild(el);
+            }
+            const colors = { info: '#0d6efd', success: '#198754', danger: '#dc3545', warning: '#ffc107' };
+            el.style.background = colors[type] || colors.info;
+            el.style.color = '#fff';
+            el.textContent = msg;
+            el.style.display = 'block';
+            clearTimeout(_toastTimer);
+            _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3200);
+        }
+
+        // 上传分片错误状态 → 人话
+        function uploadFriendlyError(status, fileName) {
+            if (status === 403) return `${fileName}：无上传权限`;
+            if (status === 409) return `${fileName}：文件冲突/已存在`;
+            if (status === 413) return `${fileName}：文件过大`;
+            if (status >= 500) return `${fileName}：服务器错误（HTTP ${status}）`;
+            return `${fileName}：上传失败（HTTP ${status}）`;
+        }
+
         function setTaskState(idx, state, cls) {
             const el = document.getElementById(`uploadTaskState_${idx}`);
             if (el) {
@@ -2142,6 +2198,10 @@
 
         // 对话框显示函数
         function showUploadDialog(isResume = false) {
+            if (!hasAdminPermission) {
+                showToast('需要管理员权限才能上传', 'danger');
+                return;
+            }
             if (!isResume) {
                 taskDetail.innerHTML = '';
                 fileInput.value = '';
@@ -2183,17 +2243,20 @@
             if (uploadInitPrefix && window._currentUpload?.sessionId) return uploadInitPrefix;
             try {
                 const resp = await fetch(`/api/upload/init?alias=${encodeURIComponent('{{ dir_obj.alias }}')}&client_id=${encodeURIComponent(getUploadClientId())}`, { method: 'GET', credentials: 'same-origin' });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    uploadInitPrefix = data.prefix || '';
-                    if (data.session_id) {
-                        window._currentUpload = window._currentUpload || { running: false, cancelled: false };
-                        window._currentUpload.sessionId = data.session_id;
-                        sessionStorage.setItem('fs_upload_session_id', data.session_id);
-                    }
+                if (!resp.ok) {
+                    const err = new Error(resp.status === 403 ? '无上传权限' : `初始化上传失败（HTTP ${resp.status}）`);
+                    throw err;
+                }
+                const data = await resp.json();
+                uploadInitPrefix = data.prefix || '';
+                if (data.session_id) {
+                    window._currentUpload = window._currentUpload || { running: false, cancelled: false };
+                    window._currentUpload.sessionId = data.session_id;
+                    sessionStorage.setItem('fs_upload_session_id', data.session_id);
                 }
             } catch (e) {
-                console.warn('获取上传前缀失败，将使用空前缀:', e);
+                console.warn('获取上传前缀失败:', e);
+                throw e;  // 由 startUpload 终止并给出友好提示
             }
             return uploadInitPrefix;
         }
@@ -2304,11 +2367,11 @@
                     clearTimeout(timer);
 
                     if (response.status >= 400 && response.status < 500) {
-                        // 4xx 属于请求本身问题，重试无意义，直接抛出
-                        throw new Error(`HTTP ${response.status} ${file.name} chunk ${chunk}`);
+                        // 4xx 属于请求本身问题，重试无意义，直接抛出（转人话提示）
+                        throw new Error(uploadFriendlyError(response.status, file.name));
                     }
                     if (!response.ok) {
-                        throw new Error(`HTTP ${response.status} ${file.name} chunk ${chunk}`);
+                        throw new Error(uploadFriendlyError(response.status, file.name));
                     }
 
                     // 尝试解析服务器返回的真实分片数
@@ -2382,7 +2445,14 @@
             if (window._currentUpload?.running) return;
 
             // 先获取后端会话前缀，用于生成安全的 file_id
-            await fetchUploadPrefix();
+            try {
+                await fetchUploadPrefix();
+            } catch (e) {
+                const btn = document.getElementById('uploadStartBtn');
+                if (btn) btn.disabled = false;
+                showToast(e && e.message ? e.message : '初始化上传失败', 'danger');
+                return;
+            }
 
             // 如果是续传，显示提示
             if (window._currentUpload?.willResume) {
@@ -2554,7 +2624,8 @@
                             ok = true;
                         } catch (error) {
                             console.error(`Error uploading ${task.relPath}:`, error);
-                            setTaskState(i, '<i class="bi bi-x-lg me-1"></i>失败', 'text-danger');
+                            const errMsg = error && error.message ? error.message : '失败';
+                            setTaskState(i, `<i class="bi bi-x-lg me-1"></i>${escapeHtmlText(errMsg)}`, 'text-danger');
                         }
                     }
                     taskResults[i] = { ok, index: i, cancelled: u.cancelledTasks?.has(i) };
@@ -3203,6 +3274,85 @@
             });
         }
 
+        // ---------- 列表排序 ----------
+        const sortPref = { key: 'name', order: 'asc' };
+        function loadSortPref() {
+            try {
+                const saved = JSON.parse(localStorage.getItem('fs_sort_pref') || '{}');
+                if (saved && saved.key) {
+                    sortPref.key = saved.key;
+                    sortPref.order = saved.order === 'desc' ? 'desc' : 'asc';
+                }
+            } catch (e) {}
+        }
+        function saveSortPref() {
+            try { localStorage.setItem('fs_sort_pref', JSON.stringify(sortPref)); } catch (e) {}
+        }
+        function compareListItems(a, b) {
+            const aDir = a.dataset.isDir === 'true';
+            const bDir = b.dataset.isDir === 'true';
+            if (aDir !== bDir) return aDir ? -1 : 1;  // 目录恒置顶
+            const key = sortPref.key;
+            let va, vb;
+            if (key === 'size') {
+                va = Number(a.dataset.size || 0); vb = Number(b.dataset.size || 0);
+            } else if (key === 'mtime') {
+                va = Number(a.dataset.mtime || 0); vb = Number(b.dataset.mtime || 0);
+            } else if (key === 'type') {
+                va = String(a.dataset.type || '').toLowerCase();
+                vb = String(b.dataset.type || '').toLowerCase();
+                if (va === vb) { va = String(a.dataset.name || '').toLowerCase(); vb = String(b.dataset.name || '').toLowerCase(); }
+            } else {
+                va = String(a.dataset.name || '').toLowerCase();
+                vb = String(b.dataset.name || '').toLowerCase();
+            }
+            const r = va < vb ? -1 : va > vb ? 1 : 0;
+            return sortPref.order === 'desc' ? -r : r;
+        }
+        function applySort() {
+            const list = document.querySelector('.list-group');
+            if (!list) return;
+            // 搜索分组模式（按所在目录聚合）不排序，避免破坏分组结构
+            if (list.querySelector('.search-group-header')) return;
+            const items = Array.from(list.querySelectorAll('.list-group-item'));
+            if (!items.length) return;
+            items.sort(compareListItems);
+            items.forEach(el => list.appendChild(el));
+            // 更新控件高亮
+            document.querySelectorAll('#listSortBar .sort-btn').forEach(b =>
+                b.classList.toggle('active', b.dataset.sort === sortPref.key));
+            const orderBtn = document.getElementById('sortOrderBtn');
+            if (orderBtn) {
+                orderBtn.innerHTML = sortPref.order === 'asc'
+                    ? '<i class="bi bi-sort-up"></i>' : '<i class="bi bi-sort-down"></i>';
+                orderBtn.title = sortPref.order === 'asc' ? '当前升序，点击切换降序' : '当前降序，点击切换升序';
+            }
+        }
+        function initSortBar() {
+            loadSortPref();
+            document.querySelectorAll('#listSortBar .sort-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    if (sortPref.key === btn.dataset.sort) {
+                        sortPref.order = sortPref.order === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        sortPref.key = btn.dataset.sort;
+                        sortPref.order = 'asc';
+                    }
+                    saveSortPref();
+                    applySort();
+                });
+            });
+            const orderBtn = document.getElementById('sortOrderBtn');
+            if (orderBtn) {
+                orderBtn.addEventListener('click', () => {
+                    sortPref.order = sortPref.order === 'asc' ? 'desc' : 'asc';
+                    saveSortPref();
+                    applySort();
+                });
+            }
+            applySort();
+        }
+
         function initTooltips() {
             const tooltipTriggerList = [].slice.call(document.querySelectorAll('[title]'));
             tooltipTriggerList.map(function (tooltipTriggerEl) {
@@ -3220,6 +3370,7 @@
             // 初始绑定复选框事件（含 Shift 连选）
             bindCheckboxEvents();
             updateBatchBar();
+            initSortBar();  // 初始化列表排序（名称/类型/大小/时间，目录置顶）
 
             // 保存原始列表HTML
             const originalListHTML = listGroup.innerHTML;
@@ -3240,6 +3391,7 @@
                     listGroup.innerHTML = originalListHTML;
                     bindCheckboxEvents();
                     initTooltips();
+                    applySort();  // 恢复列表后按偏好排序
                     return;
                 }
 
@@ -3275,6 +3427,8 @@
 
                     if (matchCount === 0) {
                         listGroup.innerHTML = `<div class="text-center text-muted py-4">未找到与“${searchTerm}”匹配的文件</div>`;
+                    } else {
+                        applySort();  // 对当前可见项（含隐藏项本身）按偏好排序
                     }
                 } else {
                     fetch(`/api/search/${encodeURIComponent(currentAlias)}?term=${encodeURIComponent(searchTerm)}`)
