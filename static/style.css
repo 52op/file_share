@@ -1,10 +1,14 @@
 
 .folder-icon {
     color: #ffd700;
+    font-size: 1.25rem;
+    line-height: 1;
 }
 
 .file-icon {
     color: #6c757d;
+    font-size: 1.25rem;
+    line-height: 1;
 }
 
 .item-link {

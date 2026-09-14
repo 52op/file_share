@@ -277,6 +277,10 @@
             cursor: pointer;
             flex-shrink: 0;
         }
+        .mt-row > i {
+            font-size: 1.25rem;
+            line-height: 1;
+        }
         .mt-label {
             overflow: hidden;
             text-overflow: ellipsis;
@@ -3495,7 +3499,7 @@
         <a href="${item.is_dir ? '/dir/' + item.path : '#'}"
            class="item-link"
            ${!item.is_dir ? `onclick="handleDownload('${currentAlias}', '${relPath}'); return false;"` : ''}>
-            <i class="bi bi-${icon} me-2"></i>
+            <i class="bi bi-${icon} ${item.is_dir ? 'folder-icon' : 'file-icon'} me-2"></i>
             ${highlightSearchName(item.name, searchTerm)}
         </a>
     </div>
