@@ -115,6 +115,7 @@ class CaddyManager:
             result = subprocess.run(
                 [self.get_caddy_exe(), "version"],
                 capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             return result.stdout.strip() or result.stderr.strip() or None
@@ -133,6 +134,7 @@ class CaddyManager:
             result = subprocess.run(
                 [self.get_caddy_exe(), "list-modules"],
                 capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             modules = result.stdout
@@ -238,6 +240,7 @@ class CaddyManager:
                 [self.get_caddy_exe(), "validate",
                  "--config", self.caddyfile_path, "--adapter", "caddyfile"],
                 capture_output=True, text=True, timeout=15,
+                stdin=subprocess.DEVNULL,
                 env=env, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode == 0:
@@ -299,6 +302,7 @@ class CaddyManager:
                  "--config", self.caddyfile_path, "--adapter", "caddyfile"],
                 env=env,
                 cwd=self.caddy_dir,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
@@ -370,6 +374,7 @@ class CaddyManager:
                     capture_output=True,
                     text=True,
                     timeout=15,
+                    stdin=subprocess.DEVNULL,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 time.sleep(1)
