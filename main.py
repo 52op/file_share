@@ -1226,8 +1226,15 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.server_thread = None
             self.executor = None
 
-            # 设置工作目录：服务进程统一使用主程序目录，与 GUI 共用同一份配置/密钥
-            os.chdir(_SERVICE_MAIN_DIR or os.path.dirname(os.path.abspath(sys.executable)))
+            # 设置工作目录与密钥/logo 目录：服务进程统一使用主程序目录，与 GUI 共用同一份配置
+            _service_run_dir = _SERVICE_MAIN_DIR or os.path.dirname(os.path.abspath(sys.executable))
+            os.chdir(_service_run_dir)
+            try:
+                set_key_dir(_service_run_dir)
+                config.logo_dir = os.path.join(_service_run_dir, "static", "logos")
+                os.makedirs(config.logo_dir, exist_ok=True)
+            except Exception:
+                pass
 
             # 确保日志目录存在并可写
             log_dir = os.path.join(get_app_path(), "logs")
@@ -4042,18 +4049,11 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1].lower() == "--run-as-service":
         _append_svc_diag("进入 --run-as-service 服务分支")
-        # 服务进程统一使用主程序目录（file_share_svc 的上级目录），
-        # 保证与 GUI 共用同一份 share_config.json / config.key / 日志，前端设置实时生效。
+        # 服务进程统一使用主程序目录（file_share_svc 的上级目录），保证与 GUI 共用同一份
+        # share_config.json / config.key / 日志。目录/密钥/logo 对齐在 FileShareService.__init__
+        # 中完成 —— 握手(StartServiceCtrlDispatcher)之前不做任何带副作用的操作，避免影响 SCM 通道。
         _SERVICE_MAIN_DIR = _resolve_service_main_dir()
-        try:
-            os.chdir(_SERVICE_MAIN_DIR)
-            set_key_dir(_SERVICE_MAIN_DIR)
-            # Config.__init__ 在模块 import 时按 exe 目录缓存了 logo_dir，服务模式下重新对齐到主目录
-            config.logo_dir = os.path.join(_SERVICE_MAIN_DIR, "static", "logos")
-            os.makedirs(config.logo_dir, exist_ok=True)
-            _append_svc_diag(f"主程序目录: {_SERVICE_MAIN_DIR}")
-        except Exception as e:
-            _append_svc_diag(f"服务主目录对齐失败: {e}")
+        _append_svc_diag(f"主程序目录: {_SERVICE_MAIN_DIR}")
         if not PYWIN32_AVAILABLE:
             print(
                 "当前环境缺少 pywin32 组件（servicemanager/win32service*），无法以系统服务模式运行。"
