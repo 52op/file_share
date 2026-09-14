@@ -73,6 +73,17 @@ def get_app_path(tempdir=False):
         return os.path.dirname(os.path.abspath(__file__))
 
 
+def _append_svc_diag(msg):
+    """服务启动诊断：仅依赖标准库，逐阶段写入 exe 同目录 svc_diag.log。
+    用于定位服务进程在 SCM 环境下启动即退出的确切崩溃点。"""
+    try:
+        diag_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "svc_diag.log")
+        with open(diag_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} PID:{os.getpid()} {msg}\n")
+    except Exception:
+        pass
+
+
 def show_password_toggle_enabled():
     """程序目录存在 showpasswd 文件时启用「显隐密码」按钮；否则隐藏。"""
     return os.path.exists(os.path.join(get_app_path(), "showpasswd"))
@@ -1179,6 +1190,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
 
     def __init__(self, args):
         try:
+            _append_svc_diag("FileShareService.__init__ 开始")
             win32serviceutil.ServiceFramework.__init__(self, args)
             self.stop_event = win32event.CreateEvent(None, 0, 0, None)
             self.server = None
@@ -1227,6 +1239,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
             return False
 
     def SvcDoRun(self):
+        _append_svc_diag("SvcDoRun 开始")
         try:
             # 等待配置文件就绪
             max_retries = 10
@@ -3677,17 +3690,22 @@ class FileShareApp:
         # 先确保服务完全删除
         self.force_delete_service()
 
-        # 安装服务
-        if getattr(sys, "frozen", False):
-            exe_path = sys.executable
-        else:
-            exe_path = sys.argv[0]
+        # Windows 服务必须使用 onedir 构建的可执行文件。
+        # PyInstaller onefile（单文件）打包的程序采用父/子双进程架构：实际运行 Python 的
+        # 子进程调用 StartServiceCtrlDispatcher 时会报 1063"无法连接服务控制器"，
+        # 导致服务启动即失败（WIN32_EXIT_CODE=1067，事件日志无 python 记录）。
+        svc_exe = self._get_service_exe_path()
+        if not svc_exe:
+            raise RuntimeError(
+                "未找到服务版可执行文件 file_share_svc\\file_share_svc.exe。\n"
+                "请将 onedir 服务版（file_share_svc 文件夹）与主程序放在同一目录后重试。"
+            )
 
         win32serviceutil.InstallService(
             serviceName="FileShareService",
             displayName="FS文件分享服务",
             startType=win32service.SERVICE_AUTO_START,
-            exeName=exe_path,
+            exeName=svc_exe,
             exeArgs="--run-as-service",
             pythonClassString="main.FileShareService",  # 添加类的完整路径
             description="提供文件共享Web服务 AQ contact: letvar@qq.com",
@@ -3718,6 +3736,17 @@ class FileShareApp:
                 self.logger.info("已设置服务启动超时(ServicesPipeTimeout)为60秒")
         except Exception as e:
             self.logger.warning(f"设置 ServicesPipeTimeout 失败: {e}")
+
+    def _get_service_exe_path(self):
+        """服务版（onedir）可执行文件路径：优先 <程序目录>/file_share_svc/file_share_svc.exe"""
+        try:
+            base = os.path.dirname(os.path.abspath(sys.executable))
+        except Exception:
+            base = os.path.dirname(os.path.abspath(sys.argv[0]))
+        candidate = os.path.join(base, "file_share_svc", "file_share_svc.exe")
+        if os.path.isfile(candidate):
+            return candidate
+        return None
 
     def force_delete_service(self):
         """强制删除服务的终极方案"""
@@ -3863,6 +3892,7 @@ if __name__ == "__main__":
     print(f"Logo目录: {logos_dir}")
 
     if len(sys.argv) > 1 and sys.argv[1].lower() == "--run-as-service":
+        _append_svc_diag("进入 --run-as-service 服务分支")
         if not PYWIN32_AVAILABLE:
             print(
                 "当前环境缺少 pywin32 组件（servicemanager/win32service*），无法以系统服务模式运行。"
@@ -3870,13 +3900,21 @@ if __name__ == "__main__":
             print("请安装 pywin32 后重试，或不带 --run-as-service 参数以普通模式启动。")
             sys.exit(1)
         try:
+            _append_svc_diag("servicemanager.Initialize() 前")
             servicemanager.Initialize()
+            _append_svc_diag("servicemanager.Initialize() 完成")
             servicemanager.PrepareToHostSingle(FileShareService)
+            _append_svc_diag("PrepareToHostSingle 完成")
             servicemanager.StartServiceCtrlDispatcher()
+            _append_svc_diag("StartServiceCtrlDispatcher 返回")
             win32serviceutil.HandleCommandLine(FileShareService)
+            _append_svc_diag("HandleCommandLine 返回（正常退出）")
         except Exception as e:
+            _append_svc_diag(f"服务分支异常: {e}\n{traceback.format_exc()}")
             print(f"服务错误: {str(e)}")  # 错误捕获
             traceback.print_exc()
+            # 以非零码退出，便于 SCM 记录启动失败（1067）
+            sys.exit(1)
 
     elif len(sys.argv) > 1:
         if not PYWIN32_AVAILABLE:
