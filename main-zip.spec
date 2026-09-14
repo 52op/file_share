@@ -23,6 +23,11 @@ datas = [
     (str(PROJECT_ROOT / "static"), "static"),
 ]
 
+# 内嵌 NSSM（Windows 服务包装器）：GUI 安装后台服务时用 NSSM 托管 headless-server，
+# 与单文件版保持一致，规避打包应用在不同 Windows 版本上的 SCM 服务握手兼容问题
+if (PROJECT_ROOT / "vendor" / "nssm.exe").exists():
+    datas.append((str(PROJECT_ROOT / "vendor" / "nssm.exe"), "."))
+
 if TKDND2_DATA_DIR and TKDND2_DATA_DIR.exists():
     datas.append((str(TKDND2_DATA_DIR), "tkinterdnd2"))
 
@@ -64,7 +69,6 @@ a = Analysis(
         "cheroot.ssl.builtin",
     ],
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
