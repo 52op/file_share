@@ -2901,7 +2901,7 @@ def _parse_range(arg_start, arg_end):
 @flask_app.route('/stats')
 @check_auth_timestamp
 def stats_page():
-    """上传/下载审计页（仅超级管理员）"""
+    """访问统计/审计页（仅超级管理员）"""
     if not session.get('admin'):
         return redirect(url_for('index'))
     start, end = _parse_range(request.args.get('start'), request.args.get('end'))
@@ -2920,11 +2920,22 @@ def stats_page():
     data = stats.query_events(start=start, end=end, etype=etype, role=role,
                               keyword=keyword, page=page, size=size)
     counts = stats.summary_counts(start, end)
+    vsum = stats.view_summary(start, end, 8)
+    # 四组汇总
+    transfer = {k: counts.get(k, 0) for k in stats.EVENT_TRANSFER}
+    manage = {k: counts.get(k, 0) for k in stats.EVENT_MANAGE}
+    auth = counts.get('auth_fail', 0)
+    transfer_total = sum(transfer.values())
+    manage_total = sum(manage.values())
     top = stats.by_file(10)
     return render_template('stats.html', pageMark='访问统计',
                            events=data['events'], total=data['total'],
                            page=data['page'], size=data['size'],
-                           counts=counts, top=top,
+                           counts=counts,
+                           transfer=transfer, manage=manage, auth=auth,
+                           transfer_total=transfer_total, manage_total=manage_total,
+                           total_bytes=counts.get('total_bytes', 0),
+                           vsum=vsum, top=top,
                            q=request.args.get('q') or '', etype=etype or '',
                            role=role or '',
                            start=request.args.get('start') or '',

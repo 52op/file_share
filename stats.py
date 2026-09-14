@@ -152,10 +152,28 @@ def _range_events(day_list, start=None, end=None):
 
 
 def query_events(start=None, end=None, etype=None, role=None, keyword=None, page=1, size=50):
-    """时间范围过滤 + 分页，按时间倒序。start/end 为时间戳（秒）。"""
+    """时间范围过滤 + 分页，按时间倒序。start/end 为时间戳（秒）。
+    etype 支持单值、逗号分隔，或特殊值 'manage'(管理操作) / 'auth'(认证失败)。"""
     _ensure()
     events = list(_range_events(_day_files(), start, end))
-    events = _apply_filters(events, etype, role, keyword)
+    if etype:
+        if etype == 'manage':
+            types = list(EVENT_MANAGE) + ['log_admin']
+        elif etype == 'auth':
+            types = list(EVENT_AUTH)
+        elif ',' in etype:
+            types = [t.strip() for t in etype.split(',') if t.strip()]
+        else:
+            types = [etype]
+        events = [e for e in events if e.get("type") in types]
+    if role:
+        events = [e for e in events if e.get("role") == role]
+    if keyword:
+        kw = keyword.lower()
+        events = [e for e in events
+                  if kw in (e.get("file") or "").lower()
+                  or kw in (e.get("alias") or "").lower()
+                  or kw in (e.get("ip") or "")]
     events.sort(key=lambda e: e.get("ts", 0), reverse=True)
     total = len(events)
     start_i = (page - 1) * size
