@@ -3806,17 +3806,16 @@ class FileShareApp:
         # 先确保服务完全删除
         self.force_delete_service()
 
-        # Windows 服务必须使用 onedir 构建的可执行文件。
-        # PyInstaller onefile（单文件）打包的程序采用父/子双进程架构：实际运行 Python 的
-        # 子进程调用 StartServiceCtrlDispatcher 时会报 1063"无法连接服务控制器"，
-        # 导致服务启动即失败（WIN32_EXIT_CODE=1067，事件日志无 python 记录）。
-        svc_exe = self._get_service_exe_path()
-        if not svc_exe and not self._ensure_service_dir():
+        # 服务镜像：优先使用当前单文件 exe（PyInstaller 4.10 构建可直接作 Windows 服务，
+        # 其 onefile 子进程可正常连接 SCM；PyInstaller 6.x 的 onefile 因父/子架构变化
+        # 无法作服务镜像，构建时务必固定 PyInstaller 4.10）。
+        # 若同目录存在 onedir 服务版（file_share_svc），则沿用（兼容旧部署）。
+        svc_exe = self._get_current_exe() or self._get_service_exe_path()
+        if not svc_exe or not os.path.isfile(svc_exe):
             raise RuntimeError(
-                "未找到服务版可执行文件 file_share_svc\\file_share_svc.exe。\n"
-                "请将 onedir 服务版（file_share_svc 文件夹）与主程序放在同一目录后重试。"
+                "无法定位服务可执行文件。\n"
+                "请使用 PyInstaller 4.10 构建的单文件 file_share.exe 部署后重试。"
             )
-        svc_exe = self._get_service_exe_path()
 
         win32serviceutil.InstallService(
             serviceName="FileShareService",
@@ -3853,6 +3852,15 @@ class FileShareApp:
                 self.logger.info("已设置服务启动超时(ServicesPipeTimeout)为60秒")
         except Exception as e:
             self.logger.warning(f"设置 ServicesPipeTimeout 失败: {e}")
+
+    def _get_current_exe(self):
+        """当前程序可执行文件路径（打包后即单文件 exe，可直接作为服务镜像）"""
+        try:
+            if getattr(sys, "frozen", False):
+                return os.path.abspath(sys.executable)
+            return os.path.abspath(sys.argv[0])
+        except Exception:
+            return None
 
     def _get_service_exe_path(self):
         """服务版（onedir）可执行文件路径：优先 <程序目录>/file_share_svc/file_share_svc.exe"""

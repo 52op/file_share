@@ -22,13 +22,6 @@ try:
 except Exception:
     pass
 
-# 内嵌服务版（onedir）实现单文件发布：GUI 安装后台服务时自动从打包资源释放到 exe 同目录。
-# 需先执行 `pyinstaller svc-onedir.spec` 产出 dist/file_share_svc 后再构建本单文件版。
-_svc_dist = project_root / "dist" / "file_share_svc"
-if (_svc_dist / "file_share_svc.exe").exists():
-    datas.append((str(_svc_dist / "file_share_svc.exe"), "file_share_svc"))
-    datas.append((str(_svc_dist / "_internal"), "file_share_svc/_internal"))
-
 # 自动收集 loguru 的所有子模块，避免打包后运行时报 No module named 'loguru'
 loguru_hiddenimports = []
 try:
@@ -78,7 +71,6 @@ a = Analysis(
     ]
     + loguru_hiddenimports,
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,

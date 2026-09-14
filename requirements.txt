@@ -19,3 +19,11 @@ pyotp==2.9.0
 
 # 开发/测试依赖
 pytest==8.3.5
+
+# 打包依赖（Windows 服务可用性关键！）
+# 必须使用 PyInstaller 4.10：其 onefile 可直接作为 Windows 服务镜像（子进程可连接 SCM）。
+# PyInstaller 5.1+ 的 onefile 改为父/子双进程，子进程无法连接服务控制器，
+# 服务启动即失败（1063/1067）。构建命令：
+#   venv_3.8\Scripts\pyinstaller main-onefile.spec --noconfirm
+pyinstaller==4.10
+pyinstaller-hooks-contrib==2022.15
