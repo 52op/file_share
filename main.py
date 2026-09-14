@@ -3813,26 +3813,43 @@ class FileShareApp:
         # 先确保服务完全删除
         self.force_delete_service()
 
-        # 服务镜像：优先使用当前单文件 exe（PyInstaller 4.10 构建可直接作 Windows 服务，
-        # 其 onefile 子进程可正常连接 SCM；PyInstaller 6.x 的 onefile 因父/子架构变化
-        # 无法作服务镜像，构建时务必固定 PyInstaller 4.10）。
-        # 若同目录存在 onedir 服务版（file_share_svc），则沿用（兼容旧部署）。
         svc_exe = self._get_current_exe() or self._get_service_exe_path()
         if not svc_exe or not os.path.isfile(svc_exe):
-            raise RuntimeError(
-                "无法定位服务可执行文件。\n"
-                "请使用 PyInstaller 4.10 构建的单文件 file_share.exe 部署后重试。"
-            )
+            raise RuntimeError("无法定位服务可执行文件，请使用单文件 file_share.exe 部署后重试。")
 
-        win32serviceutil.InstallService(
-            serviceName="FileShareService",
-            displayName="FS文件分享服务",
-            startType=win32service.SERVICE_AUTO_START,
-            exeName=svc_exe,
-            exeArgs="--run-as-service",
-            pythonClassString="main.FileShareService",  # 添加类的完整路径
-            description="提供文件共享Web服务 AQ contact: letvar@qq.com",
-        )
+        nssm = self._get_nssm_path()
+        if nssm:
+            # NSSM 包装方案：服务镜像 = NSSM（原生 C，SCM 握手由它完成），
+            # 应用 = 本程序 --headless-server。规避 PyInstaller 打包应用在不同 Windows
+            # 版本（尤其 Server 2012 R2）上 StartServiceCtrlDispatcher 1063 的兼容问题，
+            # 各版本统一可用，服务管理器正常启停、崩溃可自动重启。
+            self.logger.info(f"使用 NSSM 安装后台服务，应用: {svc_exe} --headless-server")
+            self._run_nssm([nssm, "install", "FileShareService", svc_exe, "--headless-server"])
+            self._run_nssm([nssm, "set", "FileShareService", "AppDirectory", os.path.dirname(svc_exe)])
+            self._run_nssm([nssm, "set", "FileShareService", "Start", "SERVICE_AUTO_START"])
+            log_dir = os.path.join(get_app_path(), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            self._run_nssm([
+                nssm, "set", "FileShareService", "AppStdout",
+                os.path.join(log_dir, "service_stdout.log"),
+            ])
+            self._run_nssm([
+                nssm, "set", "FileShareService", "AppStderr",
+                os.path.join(log_dir, "service_stderr.log"),
+            ])
+            if not self.is_service_installed():
+                raise RuntimeError("NSSM 安装服务失败，请确认以管理员身份运行")
+        else:
+            # 无 NSSM 时回退 pywin32 直接服务（PyInstaller 4.10 单文件在正常 Windows 上可用）
+            win32serviceutil.InstallService(
+                serviceName="FileShareService",
+                displayName="FS文件分享服务",
+                startType=win32service.SERVICE_AUTO_START,
+                exeName=svc_exe,
+                exeArgs="--run-as-service",
+                pythonClassString="main.FileShareService",  # 添加类的完整路径
+                description="提供文件共享Web服务 AQ contact: letvar@qq.com",
+            )
 
         # 增大 SCM 服务启动超时（系统默认 30000ms）。
         # PyInstaller 单文件版服务启动时要先解压全部资源再初始化，解压较慢时可能超过
@@ -3859,6 +3876,41 @@ class FileShareApp:
                 self.logger.info("已设置服务启动超时(ServicesPipeTimeout)为60秒")
         except Exception as e:
             self.logger.warning(f"设置 ServicesPipeTimeout 失败: {e}")
+
+    def _run_nssm(self, args):
+        """执行 NSSM 命令，失败仅记日志不中断"""
+        try:
+            subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=30,
+            )
+        except Exception as e:
+            self.logger.warning(f"NSSM 命令失败: {' '.join(args)} -> {e}")
+
+    def _get_nssm_path(self):
+        """定位 NSSM：优先 exe 同目录 nssm.exe，其次从打包资源释放到系统临时目录"""
+        try:
+            base = os.path.dirname(os.path.abspath(sys.executable))
+        except Exception:
+            base = os.path.dirname(os.path.abspath(sys.argv[0]))
+        candidate = os.path.join(base, "nssm.exe")
+        if os.path.isfile(candidate):
+            return candidate
+        if getattr(sys, "frozen", False):
+            src = os.path.join(sys._MEIPASS, "nssm.exe")
+            if os.path.isfile(src):
+                try:
+                    import tempfile
+
+                    dst = os.path.join(tempfile.gettempdir(), "file_share_nssm.exe")
+                    shutil.copyfile(src, dst)
+                    return dst
+                except Exception:
+                    pass
+        return None
 
     def _get_current_exe(self):
         """当前程序可执行文件路径（打包后即单文件 exe，可直接作为服务镜像）"""
@@ -3944,6 +3996,18 @@ class FileShareApp:
         time.sleep(2)
 
     def uninstall_service(self):
+        # NSSM 安装的服务先通过 NSSM 移除（会清理其注册表子键），再 force_delete 兜底
+        nssm = self._get_nssm_path()
+        if nssm:
+            try:
+                subprocess.run(
+                    [nssm, "remove", "FileShareService", "confirm"],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=30,
+                )
+            except Exception:
+                pass
         self.force_delete_service()
 
     def check_and_prompt_restart(self):

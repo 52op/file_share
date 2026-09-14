@@ -22,6 +22,11 @@ try:
 except Exception:
     pass
 
+# 内嵌 NSSM（Windows 服务包装器）：GUI 安装后台服务时用 NSSM 托管 headless-server，
+# 规避 PyInstaller 打包应用在不同 Windows 版本上的 SCM 服务握手兼容问题
+if (project_root / "vendor" / "nssm.exe").exists():
+    datas.append((str(project_root / "vendor" / "nssm.exe"), "."))
+
 # 自动收集 loguru 的所有子模块，避免打包后运行时报 No module named 'loguru'
 loguru_hiddenimports = []
 try:
