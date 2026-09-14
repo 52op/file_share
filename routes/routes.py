@@ -137,7 +137,7 @@ def _req_client():
         'ip': request.remote_addr or '',
         'ua': (request.user_agent.string or '') if request.user_agent else '',
     }
-ip_limiter = IPLimiter()
+ip_limiter = IPLimiter(persist_file=os.path.join(get_app_path(), "blocked_ips.json"))
 
 # 清理线程相关变量
 cleanup_thread_running = False
@@ -2939,6 +2939,7 @@ def stats_page():
     transfer = {k: counts.get(k, 0) for k in stats.EVENT_TRANSFER}
     manage = {k: counts.get(k, 0) for k in stats.EVENT_MANAGE}
     auth = counts.get('auth_fail', 0)
+    auth_ok = counts.get('auth_ok', 0)
     transfer_total = sum(transfer.values())
     manage_total = sum(manage.values())
     top = stats.by_file(10)
@@ -2946,7 +2947,7 @@ def stats_page():
                            events=data['events'], total=data['total'],
                            page=data['page'], size=data['size'],
                            counts=counts,
-                           transfer=transfer, manage=manage, auth=auth,
+                           transfer=transfer, manage=manage, auth=auth, auth_ok=auth_ok,
                            transfer_total=transfer_total, manage_total=manage_total,
                            total_bytes=counts.get('total_bytes', 0),
                            vsum=vsum, top=top,
@@ -2992,6 +2993,55 @@ def stats_clear():
     removed = stats.clear_all()
     stats.record_event(type='log_admin', role='admin', file='清空全部日志', **_req_client())
     return jsonify({'ok': True, 'removed': removed})
+
+
+def _sync_blocked_persist():
+    """确保手动封禁列表持久化到主程序目录（服务/GUI 共用）"""
+    ip_limiter.persist_file = os.path.join(get_app_path(), "blocked_ips.json")
+
+
+@flask_app.route('/stats/block-ip', methods=['POST'])
+@check_auth_timestamp
+def stats_block_ip():
+    if not session.get('admin'):
+        return jsonify({'error': 'forbidden'}), 403
+    ip = (request.json.get('ip') or '').strip()
+    if not ip:
+        return jsonify({'error': '缺少IP'}), 400
+    _sync_blocked_persist()
+    minutes = request.json.get('minutes')  # None=永久
+    try:
+        until = ip_limiter.block(ip, minutes)
+    except (TypeError, ValueError):
+        return jsonify({'error': '无效的封禁时长'}), 400
+    stats.record_event(
+        type='block', role='admin', file=f'封禁IP: {ip}',
+        detail='永久' if minutes is None else f'{int(minutes)} 分钟',
+        **_req_client())
+    return jsonify({'ok': True, 'until': until, 'permanent': until == 0})
+
+
+@flask_app.route('/stats/unblock-ip', methods=['POST'])
+@check_auth_timestamp
+def stats_unblock_ip():
+    if not session.get('admin'):
+        return jsonify({'error': 'forbidden'}), 403
+    ip = (request.json.get('ip') or '').strip()
+    if not ip:
+        return jsonify({'error': '缺少IP'}), 400
+    _sync_blocked_persist()
+    removed = ip_limiter.unblock(ip)
+    stats.record_event(type='unblock', role='admin', file=f'解除封禁IP: {ip}', **_req_client())
+    return jsonify({'ok': True, 'removed': removed})
+
+
+@flask_app.route('/api/blocked-ips')
+@check_auth_timestamp
+def blocked_ips():
+    if not session.get('admin'):
+        return jsonify({'error': 'forbidden'}), 403
+    _sync_blocked_persist()
+    return jsonify({'ips': ip_limiter.list_blocked()})
 
 
 @flask_app.route('/share-manager')
