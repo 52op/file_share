@@ -31,9 +31,14 @@ def _set_webdav(enabled=True, port=12347):
 
 
 def _extract_hint(html):
-    """从渲染 HTML 提取 `var hint = ...;` 的 JSON 值；未注入时为 None。"""
-    m = re.search(r"var hint = (.*?);\s*\n\s*if \(!hint\)", html, re.S)
-    assert m, "模板中未找到 hint 注入点"
+    """从渲染 HTML 提取 `var hint = ...;` 的 JSON 值；未注入时返回 None。
+
+    hint JS 整体包裹在 `{% if webdav_hint %}` 内，禁用时不渲染 script 块，
+    故匹配不到也视为「无提示」（与 hint=null 等价）。
+    """
+    m = re.search(r"var hint = (.*?);\s*\n", html)
+    if not m:
+        return None
     return json.loads(m.group(1))
 
 
@@ -54,7 +59,13 @@ def test_hint_ro_dir_password(app, client):
         s["auth_locked"] = True
         s["auth_time_locked"] = time.time()
     _set_webdav()
-    hint = _open_hint(client, "/dir/locked")
+    r = client.get("/dir/locked")
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert 'id="webdavModal"' in html, "启用 webdav 时应渲染居中 modal 弹层"
+    assert "webdavCopyBtn" in html, "modal 每行应有复制地址按钮"
+    assert "Popover" not in html.split("<!-- 移动文件逻辑")[0], "已移除 hover popover 实现"
+    hint = _extract_hint(html)
     assert hint["base"].endswith(":12347"), hint["base"]
     assert hint.get("alias") == "locked"
     assert _users(hint) == ["locked", "guest"], _users(hint)

@@ -313,7 +313,7 @@
                             {{ item.name }}
                             {% if loop.last and webdav_hint %}
                                 <button type="button" class="btn btn-sm btn-outline-secondary ms-2 py-0 px-2 rounded-pill"
-                                        id="webdavHintBtn" title="WebDAV 挂载信息" tabindex="0"
+                                        id="webdavHintBtn" title="查看 WebDAV 挂载信息（点击可复制地址）" tabindex="0"
                                         style="font-size:.75rem;vertical-align:1px;border-style:dashed;">
                                     <i class="bi bi-hdd-network me-1"></i>WebDAV
                                 </button>
@@ -4025,40 +4025,107 @@
 
         /* 移动文件逻辑 end */
     </script>
+    {% if webdav_hint %}
+    <!-- WebDAV 挂载信息弹层（居中 modal） -->
+    <div class="modal fade" id="webdavModal" tabindex="-1" aria-labelledby="webdavModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="webdavModalLabel"><i class="bi bi-hdd-network me-1"></i>WebDAV 挂载信息</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <table class="table table-sm align-middle mb-3">
+                        <thead>
+                            <tr>
+                                <th style="min-width:200px">挂载地址</th>
+                                <th>用户名</th>
+                                <th>密码</th>
+                                <th>权限</th>
+                                <th class="text-end" style="width:44px"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="webdavModalRows"></tbody>
+                    </table>
+                    <div class="text-muted small" id="webdavModalNote"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <script>
-        /* WebDAV 挂载提示（面包屑图标 hover/聚焦显示） */
+        /* WebDAV 挂载信息弹层：点击面包屑按钮打开 modal（并复制地址） */
         (function () {
             var hint = {{ webdav_hint | tojson }};
             if (!hint) return;
             var btn = document.getElementById('webdavHintBtn');
-            if (!btn || typeof bootstrap === 'undefined' || !bootstrap.Popover) return;
+            if (!btn || typeof bootstrap === 'undefined') return;
+            var modalEl = document.getElementById('webdavModal');
+            if (!modalEl) return;
+
             function esc(s) {
                 return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
-            function buildContent() {
-                var rows = hint.accounts.map(function (a) {
-                    return '<tr>' +
-                        '<td class="text-break"><code>' + esc(a[0]) + '</code></td>' +
-                        '<td><code>' + esc(a[1]) + '</code></td>' +
-                        '<td>' + esc(a[2]) + '</td>' +
-                        '<td>' + esc(a[3]) + '</td></tr>';
-                }).join('');
-                return '<div style="max-width:560px;min-width:330px">' +
-                    '<table class="table table-sm small mb-2 align-middle">' +
-                    '<thead><tr><th>挂载地址</th><th>用户名</th><th>密码</th><th>权限</th></tr></thead>' +
-                    '<tbody>' + rows + '</tbody></table>' +
-                    '<div class="text-muted small">' + esc(hint.note) + '</div>' +
-                    '</div>';
+
+            var rows = hint.accounts.map(function (a) {
+                return '<tr>' +
+                    '<td class="text-break"><code>' + esc(a[0]) + '</code>' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary ms-1 py-0 px-1 webdavCopyBtn" ' +
+                    'title="复制挂载地址" data-copy="' + esc(a[0]) + '"><i class="bi bi-clipboard"></i></button></td>' +
+                    '<td><code>' + esc(a[1]) + '</code></td>' +
+                    '<td>' + esc(a[2]) + '</td>' +
+                    '<td>' + esc(a[3]) + '</td>' +
+                    '<td class="text-end"></td>' +
+                    '</tr>';
+            }).join('');
+            document.getElementById('webdavModalRows').innerHTML = rows;
+            document.getElementById('webdavModalNote').textContent = hint.note || '';
+
+            var modal = new bootstrap.Modal(modalEl);
+            btn.addEventListener('click', function () { modal.show(); });
+
+            function copyText(text, btnEl, done) {
+                function fallback() {
+                    var ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try {
+                        document.execCommand('copy');
+                        done();
+                    } catch (e) {
+                        alert('复制失败，请手动复制地址');
+                    } finally {
+                        document.body.removeChild(ta);
+                    }
+                }
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text).then(done).catch(fallback);
+                } else {
+                    fallback();
+                }
             }
-            new bootstrap.Popover(btn, {
-                html: true,
-                title: '<i class="bi bi-hdd-network me-1"></i>WebDAV',
-                content: buildContent,
-                placement: 'bottom-start',
-                trigger: "hover focus",
-                container: 'body'
+
+            modalEl.addEventListener('click', function (evt) {
+                var cbtn = evt.target.closest('.webdavCopyBtn');
+                if (!cbtn) return;
+                var url = cbtn.getAttribute('data-copy') || '';
+                var old = cbtn.innerHTML;
+                cbtn.disabled = true;
+                copyText(url, cbtn, function () {
+                    cbtn.innerHTML = '<i class="bi bi-check-lg text-success"></i>';
+                    setTimeout(function () {
+                        cbtn.innerHTML = old;
+                        cbtn.disabled = false;
+                    }, 1200);
+                });
             });
         })();
     </script>
+    {% endif %}
     <!--通用footer开始-->
 {% endblock %}
