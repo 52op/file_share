@@ -73,6 +73,33 @@ def test_caddyfile_webdav_same_as_ssl_skipped():
     caddyfile = CaddyManager(cfg).generate_caddyfile()
     assert "fs.example.com:12346 {" not in caddyfile
 
+
+def test_caddyfile_http2_enabled_by_default():
+    """默认 http2=True：不输出 protocols h1，保留 HTTP/2 多路复用。"""
+    cfg = _cfg()
+    cfg.ssl_enabled = True
+    cfg.caddy_enabled = True
+    cfg.webdav_enabled = True
+    cfg.webdav_port = 12347
+    cfg.caddy_http2 = True
+    caddyfile = CaddyManager(cfg).generate_caddyfile()
+    assert "protocols h1" not in caddyfile
+    assert "keepalive 30s" in caddyfile, "上游应显式复用连接"
+    assert "reverse_proxy 127.0.0.1:12345 {" in caddyfile
+
+
+def test_caddyfile_http2_disabled_adds_protocols_h1():
+    """caddy_http2=False：主站与 webdav 站都加 protocols h1（浏览器走 HTTP/1.1 多连接）。"""
+    cfg = _cfg()
+    cfg.ssl_enabled = True
+    cfg.caddy_enabled = True
+    cfg.webdav_enabled = True
+    cfg.webdav_port = 12347
+    cfg.caddy_http2 = False
+    caddyfile = CaddyManager(cfg).generate_caddyfile()
+    assert caddyfile.count("protocols h1") == 2, caddyfile  # 主站 + webdav 站
+    assert "keepalive 30s" in caddyfile
+
 def test_tls_semantics_caddy_no_double_tls(monkeypatch):
     """语义分离：Caddy 模式对外 https，但 webdav 监听不套 TLS（避免重复）。"""
     import caddy_manager as cm

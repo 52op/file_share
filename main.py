@@ -545,6 +545,8 @@ class Config:
         self.caddy_tencent_secret_id = ""  # 腾讯云 SecretId（DNSPod DNS-01 验证）
         self.caddy_tencent_secret_key = ""  # 腾讯云 SecretKey（DNSPod DNS-01 验证）
         self.caddy_cloudflare_api_token = ""  # Cloudflare API Token（DNS-01 验证）
+        self.caddy_http2 = True  # HTTPS 是否启用 HTTP/2（关闭后浏览器走 HTTP/1.1 多连接，
+                                 # 规避高丢包网络下 HTTP/2 单连接队头阻塞导致的整页卡顿）
 
         # 页面设置
         self.page_title = "FS文件分享服务工具"
@@ -597,6 +599,7 @@ class Config:
             "caddy_tencent_secret_id": get_crypto().encrypt(self.caddy_tencent_secret_id),
             "caddy_tencent_secret_key": get_crypto().encrypt(self.caddy_tencent_secret_key),
             "caddy_cloudflare_api_token": get_crypto().encrypt(self.caddy_cloudflare_api_token),
+            "caddy_http2": self.caddy_http2,
             # 页面设置
             "page_title": self.page_title,
             "logo_name": self.logo_name,
@@ -690,6 +693,8 @@ class Config:
                     self.webdav_port = int(data.get("webdav_port", 8081) or 8081)
                 except (TypeError, ValueError):
                     self.webdav_port = 8081
+                # Caddy HTTP/2（默认开启）
+                self.caddy_http2 = bool(data.get("caddy_http2", True))
 
                 # 确保logo目录存在
                 os.makedirs(self.logo_dir, exist_ok=True)

@@ -277,6 +277,11 @@ class CaddyManager:
             # HTTP-01：Caddy 默认需要在 80 端口响应验证请求
             tls_block = ""
 
+        # HTTP/2：高丢包网络下 h2 单连接队头阻塞会导致整页资源排队卡顿，
+        # 关闭后浏览器走 HTTP/1.1 多连接（开关：配置 caddy_http2=False）
+        http2 = bool(getattr(self.config, "caddy_http2", True))
+        proto_line = "" if http2 else "\tprotocols h1\n"
+
         caddyfile = (
             "{\n"
             "\tauto_https disable_redirects\n"  # 禁用 HTTP->HTTPS 重定向，避免占用 80 端口
@@ -286,7 +291,12 @@ class CaddyManager:
             "\n"
             f"{domain} {{\n"
             f"{tls_block}"
-            f"\treverse_proxy 127.0.0.1:{target_port}\n"
+            f"{proto_line}"
+            f"\treverse_proxy 127.0.0.1:{target_port} {{\n"
+            "\t\ttransport http {\n"
+            "\t\t\tkeepalive 30s\n"  # 显式上游连接复用，避免每请求重建 TCP
+            "\t\t}\n"
+            "\t}\n"
             "}\n"
         )
 
@@ -298,7 +308,12 @@ class CaddyManager:
                 caddyfile += (
                     f"\n{domain}:{wd_port} {{\n"
                     f"{tls_block}"
-                    f"\treverse_proxy {_wd_host}:{wd_internal}\n"
+                    f"{proto_line}"
+                    f"\treverse_proxy {_wd_host}:{wd_internal} {{\n"
+                    "\t\ttransport http {\n"
+                    "\t\t\tkeepalive 30s\n"
+                    "\t\t}\n"
+                    "\t}\n"
                     "}\n"
                 )
         return caddyfile
