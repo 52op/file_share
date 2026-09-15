@@ -47,6 +47,10 @@ from ttkbootstrap.scrolled import ScrolledText
 from user_agents import parse
 
 from encryption import get_crypto, set_key_dir
+try:
+    import webdav  # WebDAV 可选；依赖未装时不影响主程序
+except Exception:
+    webdav = None
 
 # Cheroot服务器（替换Waitress）
 from werkzeug.serving import make_server  # 开发环境使用
@@ -208,6 +212,25 @@ set_key_dir(get_app_path())
 
 serverUrl = ""
 runningPort = 12345
+
+# WebDAV server 句柄（独立端口，可选功能）
+_webdav_server = None
+
+
+def _maybe_start_webdav():
+    """WebDAV 可选：启用时启动独立端口 server，返回 server 或 None"""
+    global _webdav_server
+    if webdav is None:
+        return None
+    _webdav_server = webdav.start_webdav(config)
+    return _webdav_server
+
+
+def _maybe_stop_webdav():
+    global _webdav_server
+    if webdav is not None and _webdav_server is not None:
+        webdav.stop_webdav(_webdav_server)
+    _webdav_server = None
 
 # 网页保存配置后同步GUI窗体的回调（由FileShareApp注册，无GUI时为空）
 _gui_config_sync_cb = None
@@ -530,6 +553,10 @@ class Config:
         # logo存储目录 - 使用程序运行目录而不是临时目录
         self.logo_dir = os.path.join(get_app_path(), "static", "logos")
 
+        # WebDAV（可选，默认关闭；独立端口）
+        self.webdav_enabled = False
+        self.webdav_port = 8081
+
         # 确保必要目录存在
         os.makedirs(self.upload_temp_dir, exist_ok=True)
         os.makedirs(self.cert_dir, exist_ok=True)
@@ -575,6 +602,9 @@ class Config:
             "logo_name": self.logo_name,
             "logo_image_url": self.logo_image_url,
             # logo_dir不需要保存到配置文件，因为它总是基于程序运行目录计算
+            # WebDAV
+            "webdav_enabled": self.webdav_enabled,
+            "webdav_port": self.webdav_port,
         }
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(config_data, f, ensure_ascii=False, indent=2)
@@ -654,6 +684,12 @@ class Config:
                 self.logo_image_url = data.get("logo_image_url", "")
                 # logo_dir始终使用程序运行目录，不从配置文件读取
                 self.logo_dir = os.path.join(get_app_path(), "static", "logos")
+                # WebDAV
+                self.webdav_enabled = data.get("webdav_enabled", False)
+                try:
+                    self.webdav_port = int(data.get("webdav_port", 8081) or 8081)
+                except (TypeError, ValueError):
+                    self.webdav_port = 8081
 
                 # 确保logo目录存在
                 os.makedirs(self.logo_dir, exist_ok=True)
@@ -1321,6 +1357,7 @@ class FileShareService(win32serviceutil.ServiceFramework):
                         flask_app.logger.info(
                             f"Cheroot HTTP服务器已创建，端口: {config.port}"
                         )
+                        _maybe_start_webdav()  # 可选 WebDAV 独立端口
 
                         # 如果启用SSL，创建HTTPS服务器
                         if config.ssl_enabled:
@@ -1843,6 +1880,7 @@ def run_headless_server():
             pass
 
     _append_svc_diag("headless 服务器已创建: " + ", ".join(n for n, _ in servers))
+    _maybe_start_webdav()  # 可选 WebDAV 独立端口
     executor = ThreadPoolExecutor(max_workers=max(1, len(servers)))
     futures = [executor.submit(run) for _, run in servers]
     try:
@@ -1851,7 +1889,8 @@ def run_headless_server():
     except KeyboardInterrupt:
         pass
     finally:
-        # 正常退出（Ctrl+C / 服务器停止）时清理 Caddy 与清理线程
+        # 正常退出（Ctrl+C / 服务器停止）时清理 Caddy、WebDAV 与清理线程
+        _maybe_stop_webdav()
         if caddy_manager:
             try:
                 caddy_manager.stop()
@@ -3566,6 +3605,7 @@ class FileShareApp:
                 self.server_thread = threading.Thread(target=run_server)
                 self.server_thread.daemon = True
                 self.server_thread.start()
+                _maybe_start_webdav()  # 可选 WebDAV 独立端口
 
                 server_type = "Cheroot" if config.use_waitress else "Werkzeug"
                 flask_app.logger.info(
@@ -3599,6 +3639,8 @@ class FileShareApp:
                             if self.is_caddy_mode_active() or self.caddy_manager.is_running():
                                 if self.caddy_manager.stop():
                                     self.log_area.insert(END, "Caddy 反代已停止\n")
+
+                            _maybe_stop_webdav()  # 可选 WebDAV 独立端口
 
                             if config.use_waitress:
                                 # Mark server as stopped

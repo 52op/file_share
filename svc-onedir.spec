@@ -63,6 +63,18 @@ a = Analysis(
         "cheroot.wsgi",
         "cheroot.ssl",
         "cheroot.ssl.builtin",
+        # WebDAV（可选）
+        "wsgidav",
+        "wsgidav.wsgidav_app",
+        "wsgidav.request_resolver",
+        "wsgidav.http_authenticator",
+        "wsgidav.error_printer",
+        "wsgidav.dir_browser",
+        "wsgidav.dc.simple_dc",
+        "wsgidav.dc.base_dc",
+        "wsgidav.fs_dav_provider",
+        "wsgidav.mw.base_mw",
+        "defusedxml",
     ]
     + loguru_hiddenimports,
     hookspath=[],
