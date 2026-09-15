@@ -277,11 +277,6 @@ class CaddyManager:
             # HTTP-01：Caddy 默认需要在 80 端口响应验证请求
             tls_block = ""
 
-        # HTTP/2：高丢包网络下 h2 单连接队头阻塞会导致整页资源排队卡顿，
-        # 关闭后浏览器走 HTTP/1.1 多连接（开关：配置 caddy_http2=False）
-        http2 = bool(getattr(self.config, "caddy_http2", True))
-        proto_line = "" if http2 else "\tprotocols h1\n"
-
         caddyfile = (
             "{\n"
             "\tauto_https disable_redirects\n"  # 禁用 HTTP->HTTPS 重定向，避免占用 80 端口
@@ -291,7 +286,6 @@ class CaddyManager:
             "\n"
             f"{domain} {{\n"
             f"{tls_block}"
-            f"{proto_line}"
             f"\treverse_proxy 127.0.0.1:{target_port} {{\n"
             "\t\ttransport http {\n"
             "\t\t\tkeepalive 30s\n"  # 显式上游连接复用，避免每请求重建 TCP
@@ -308,7 +302,6 @@ class CaddyManager:
                 caddyfile += (
                     f"\n{domain}:{wd_port} {{\n"
                     f"{tls_block}"
-                    f"{proto_line}"
                     f"\treverse_proxy {_wd_host}:{wd_internal} {{\n"
                     "\t\ttransport http {\n"
                     "\t\t\tkeepalive 30s\n"
@@ -317,6 +310,27 @@ class CaddyManager:
                     "}\n"
                 )
         return caddyfile
+
+    def http3_enabled(self):
+        """HTTP/3（QUIC/UDP）是否开启：需 ssl+caddy 且配置开启。"""
+        return bool(
+            getattr(self.config, "ssl_enabled", False)
+            and getattr(self.config, "caddy_enabled", False)
+            and getattr(self.config, "caddy_http3", True)
+        )
+
+    def http3_udp_ports(self):
+        """HTTP/3 需要放行的 UDP 端口（Caddy 默认在全部 TLS 端口提供 QUIC）。"""
+        if not self.http3_enabled():
+            return []
+        ports = []
+        if getattr(self.config, "ssl_port", None):
+            ports.append(int(self.config.ssl_port))
+        if getattr(self.config, "webdav_enabled", False):
+            wd = int(getattr(self.config, "webdav_port", 0) or 0)
+            if wd:
+                ports.append(wd)
+        return list(dict.fromkeys(ports))
 
     def write_caddyfile(self):
         """生成并写入 Caddyfile 到 caddy 目录"""

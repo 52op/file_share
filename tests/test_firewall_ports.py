@@ -31,3 +31,27 @@ def test_ssl_same_as_http_not_duplicated():
 def test_webdav_same_as_http_deduped():
     cfg = _cfg(webdav=True, webdav_port=12345)
     assert main.collect_firewall_ports() == [12345]
+
+
+def test_udp_ports_http3_on():
+    cfg = _cfg(ssl=True, ssl_port=12346, webdav=True, webdav_port=12347)
+    cfg.caddy_enabled = True
+    cfg.caddy_http3 = True
+    assert main.collect_firewall_udp_ports() == [12346, 12347]
+
+
+def test_udp_ports_http3_off_or_no_caddy():
+    cfg = _cfg(ssl=True, ssl_port=12346, webdav=True, webdav_port=12347)
+    cfg.caddy_enabled = True
+    cfg.caddy_http3 = False
+    assert main.collect_firewall_udp_ports() == []
+    cfg.caddy_http3 = True
+    cfg.caddy_enabled = False
+    assert main.collect_firewall_udp_ports() == []
+
+
+def test_udp_ports_no_ssl():
+    cfg = _cfg(webdav=True, webdav_port=12347)
+    cfg.caddy_enabled = True
+    cfg.caddy_http3 = True
+    assert main.collect_firewall_udp_ports() == []

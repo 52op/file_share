@@ -226,22 +226,22 @@ class SSLSettingsDialog(ttk.Toplevel):
         self.caddy_check.pack(side=LEFT)
         ToolTip(self.caddy_check, "启用后 Caddy 将自动申请/续期证书，并反向代理到本机 HTTP 服务")
 
-        # HTTP/2 开关：高丢包/抖动网络下 h2 单连接队头阻塞会拖垮整页加载
-        http2_frame = ttk.Frame(tab_caddy)
-        http2_frame.pack(fill=X, pady=(0, 2))
-        self.caddy_http2_var = tk.BooleanVar(value=bool(getattr(self.config, "caddy_http2", True)))
-        self.caddy_http2_check = ttk.Checkbutton(
-            http2_frame,
-            text="HTTPS 启用 HTTP/2（多路复用）",
-            variable=self.caddy_http2_var,
+        # HTTP/3 开关：QUIC 多路复用，无 TCP 队头阻塞，丢包/抖动网络下更稳
+        http3_frame = ttk.Frame(tab_caddy)
+        http3_frame.pack(fill=X, pady=(0, 2))
+        self.caddy_http3_var = tk.BooleanVar(value=bool(getattr(self.config, "caddy_http3", True)))
+        self.caddy_http3_check = ttk.Checkbutton(
+            http3_frame,
+            text="HTTPS 启用 HTTP/3（QUIC 加速）",
+            variable=self.caddy_http3_var,
         )
-        self.caddy_http2_check.pack(side=LEFT)
+        self.caddy_http3_check.pack(side=LEFT)
         ToolTip(
-            self.caddy_http2_check,
-            "HTTP/2 将页面所有资源合并到单条 TCP 连接传输，网络丢包/抖动时\n"
-            "一个慢请求会阻塞整条连接上的全部请求（表现为刷新后 CSS/JS 迟迟加载\n"
-            "不出来、页面只有纯文字，而 HTTP 访问正常）。\n"
-            "如遇此情况，取消勾选改用 HTTP/1.1 多连接即可明显改善。保存重启服务后生效。",
+            self.caddy_http3_check,
+            "HTTP/3 基于 UDP/QUIC：多路复用且无队头阻塞，多个请求之间互不拖累，\n"
+            "在网络丢包/抖动时比 HTTP/2（单 TCP 连接）和 HTTP/1.1 都更稳定。\n"
+            "开启后会自动放行对应端口的 UDP 防火墙规则；关闭则仅走 TCP。\n"
+            "保存重启服务后生效（浏览器需支持 HTTP/3，现主流浏览器均支持）。",
         )
 
         ttk.Label(
@@ -389,6 +389,7 @@ class SSLSettingsDialog(ttk.Toplevel):
         self.cert_server_var.set(self.config.cert_server_url)
         self.ssl_domain_var.set(self.config.ssl_domain)
         self.caddy_enabled_var.set(self.config.caddy_enabled)
+        self.caddy_http3_var.set(bool(getattr(self.config, "caddy_http3", True)))
         self.caddy_provider_var.set(self.config.caddy_dns_provider or "alidns")
         # 按当前提供商填充凭据
         creds = {
@@ -857,7 +858,7 @@ class SSLSettingsDialog(ttk.Toplevel):
             self.config.cert_server_url = cert_server
             self.config.ssl_domain = ssl_domain
             self.config.caddy_enabled = caddy_enabled
-            self.config.caddy_http2 = bool(self.caddy_http2_var.get())
+            self.config.caddy_http3 = bool(self.caddy_http3_var.get())
             self.config.caddy_dns_provider = self.caddy_provider_var.get() or "alidns"
             # 按提供商保存凭据
             cred1 = self.cred1_var.get().strip()
@@ -955,6 +956,7 @@ class SSLSettingsDialog(ttk.Toplevel):
                     current_cert_server != self.config.cert_server_url or
                     current_ssl_domain != self.config.ssl_domain or
                     current_caddy_enabled != self.config.caddy_enabled or
+                    bool(self.caddy_http3_var.get()) != bool(getattr(self.config, "caddy_http3", True)) or
                     current_provider != self.config.caddy_dns_provider or
                     current_cred1 != provider_creds[0] or
                     current_cred2 != provider_creds[1])

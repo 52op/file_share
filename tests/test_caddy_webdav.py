@@ -74,31 +74,55 @@ def test_caddyfile_webdav_same_as_ssl_skipped():
     assert "fs.example.com:12346 {" not in caddyfile
 
 
-def test_caddyfile_http2_enabled_by_default():
-    """默认 http2=True：不输出 protocols h1，保留 HTTP/2 多路复用。"""
+def test_caddyfile_no_invalid_protocols_directive():
+    """标准版 Caddy 不支持 `protocols` 指令（会导致 validate 失败、Caddy 不启动）。
+    生成内容不得包含该指令；上游 keepalive 复用应存在。"""
     cfg = _cfg()
     cfg.ssl_enabled = True
     cfg.caddy_enabled = True
     cfg.webdav_enabled = True
     cfg.webdav_port = 12347
-    cfg.caddy_http2 = True
+    cfg.caddy_http3 = True
     caddyfile = CaddyManager(cfg).generate_caddyfile()
-    assert "protocols h1" not in caddyfile
-    assert "keepalive 30s" in caddyfile, "上游应显式复用连接"
+    assert "protocols" not in caddyfile, "标准 Caddy 无 protocols 指令，出现会启动失败"
+    assert "keepalive 30s" in caddyfile
     assert "reverse_proxy 127.0.0.1:12345 {" in caddyfile
 
 
-def test_caddyfile_http2_disabled_adds_protocols_h1():
-    """caddy_http2=False：主站与 webdav 站都加 protocols h1（浏览器走 HTTP/1.1 多连接）。"""
+def test_http3_udp_ports():
+    """HTTP/3 开启时返回 Caddy TLS 端口(主站+webdav)作为 UDP 放行端口。"""
     cfg = _cfg()
     cfg.ssl_enabled = True
     cfg.caddy_enabled = True
     cfg.webdav_enabled = True
     cfg.webdav_port = 12347
-    cfg.caddy_http2 = False
-    caddyfile = CaddyManager(cfg).generate_caddyfile()
-    assert caddyfile.count("protocols h1") == 2, caddyfile  # 主站 + webdav 站
-    assert "keepalive 30s" in caddyfile
+    cfg.caddy_http3 = True
+    cm_ = CaddyManager(cfg)
+    assert cm_.http3_enabled() is True
+    assert cm_.http3_udp_ports() == [12346, 12347]
+
+
+def test_http3_disabled_no_udp_ports():
+    cfg = _cfg()
+    cfg.ssl_enabled = True
+    cfg.caddy_enabled = True
+    cfg.webdav_enabled = True
+    cfg.webdav_port = 12347
+    cfg.caddy_http3 = False
+    cm_ = CaddyManager(cfg)
+    assert cm_.http3_enabled() is False
+    assert cm_.http3_udp_ports() == []
+
+
+def test_http3_requires_caddy_mode():
+    """非 Caddy 模式即使开关开也没有 UDP 端口。"""
+    cfg = _cfg()
+    cfg.ssl_enabled = True
+    cfg.caddy_enabled = False
+    cfg.caddy_http3 = True
+    cm_ = CaddyManager(cfg)
+    assert cm_.http3_enabled() is False
+    assert cm_.http3_udp_ports() == []
 
 def test_tls_semantics_caddy_no_double_tls(monkeypatch):
     """语义分离：Caddy 模式对外 https，但 webdav 监听不套 TLS（避免重复）。"""

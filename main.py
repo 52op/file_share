@@ -545,8 +545,8 @@ class Config:
         self.caddy_tencent_secret_id = ""  # 腾讯云 SecretId（DNSPod DNS-01 验证）
         self.caddy_tencent_secret_key = ""  # 腾讯云 SecretKey（DNSPod DNS-01 验证）
         self.caddy_cloudflare_api_token = ""  # Cloudflare API Token（DNS-01 验证）
-        self.caddy_http2 = True  # HTTPS 是否启用 HTTP/2（关闭后浏览器走 HTTP/1.1 多连接，
-                                 # 规避高丢包网络下 HTTP/2 单连接队头阻塞导致的整页卡顿）
+        self.caddy_http3 = True  # HTTP/3(QUIC/UDP) 加速：Caddy 内置支持，需防火墙放行 UDP 端口；
+                                 # 多路复用且无队头阻塞，高丢包/抖动网络下比 HTTP/1.1、HTTP/2 更稳
 
         # 页面设置
         self.page_title = "FS文件分享服务工具"
@@ -599,7 +599,7 @@ class Config:
             "caddy_tencent_secret_id": get_crypto().encrypt(self.caddy_tencent_secret_id),
             "caddy_tencent_secret_key": get_crypto().encrypt(self.caddy_tencent_secret_key),
             "caddy_cloudflare_api_token": get_crypto().encrypt(self.caddy_cloudflare_api_token),
-            "caddy_http2": self.caddy_http2,
+            "caddy_http3": self.caddy_http3,
             # 页面设置
             "page_title": self.page_title,
             "logo_name": self.logo_name,
@@ -693,8 +693,8 @@ class Config:
                     self.webdav_port = int(data.get("webdav_port", 8081) or 8081)
                 except (TypeError, ValueError):
                     self.webdav_port = 8081
-                # Caddy HTTP/2（默认开启）
-                self.caddy_http2 = bool(data.get("caddy_http2", True))
+                # Caddy HTTP/3(QUIC，默认开启)
+                self.caddy_http3 = bool(data.get("caddy_http3", True))
 
                 # 确保logo目录存在
                 os.makedirs(self.logo_dir, exist_ok=True)
@@ -1523,8 +1523,8 @@ class FileShareService(win32serviceutil.ServiceFramework):
             # PyInstaller 单文件版启动时需要解压全部资源，配置加载、防火墙、证书监控等耗时步骤放到 RUNNING 之后执行。
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
 
-            # 添加防火墙规则（HTTP + HTTPS + WebDAV 合并为一条，逗号分隔）
-            apply_firewall_rules(collect_firewall_ports())
+            # 添加防火墙规则（HTTP + HTTPS + WebDAV + HTTP3 UDP）
+            apply_firewall_rules(collect_firewall_ports(), collect_firewall_udp_ports())
 
             if config.auto_cleanup and not is_cleanup_running():
                 start_cleanup_thread()  # 启动清理线程
@@ -1779,18 +1779,20 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 self.logger.info(f"删除防火墙规则 {name} 失败: {e}")
 
 
-def apply_firewall_rules(ports):
+def apply_firewall_rules(ports, udp_ports=None):
     """为端口列表统一添加防火墙放行规则（入站+出站，规则名 File_Share_Port）。
 
     模块级函数，供 headless 模式与 Windows 服务模式共用；端口列表应包含
-    HTTP、HTTPS(Caddy) 与 WebDAV 对外端口。失败静默（无管理员权限时忽略）。
+    HTTP、HTTPS(Caddy) 与 WebDAV 对外端口。udp_ports 额外放行 UDP
+    （HTTP/3/QUIC 需要）。失败静默（无管理员权限时忽略）。
 
     注意：逐端口创建规则——部分 Windows 版本的 netsh 不接受
     `localport=a,b,c` 逗号列表（报「指定的值无效」），单端口最兼容。
     """
     try:
         ports = list(dict.fromkeys(int(p) for p in ports if p))
-        if not ports:
+        udp_ports = list(dict.fromkeys(int(p) for p in (udp_ports or []) if p))
+        if not ports and not udp_ports:
             return
         rule_name = "File_Share_Port"
         subprocess.run(
@@ -1806,11 +1808,20 @@ def apply_firewall_rules(ports):
                     shell=True, capture_output=True, text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
+        for p in udp_ports:
+            for direction in ("in", "out"):
+                subprocess.run(
+                    f'netsh advfirewall firewall add rule name="{rule_name}" '
+                    f"dir={direction} action=allow protocol=UDP localport={p}",
+                    shell=True, capture_output=True, text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
         try:
             import loguru
 
             loguru.logger.info(
-                f"已配置防火墙放行规则 {rule_name}: 端口 {','.join(map(str, ports))}"
+                f"已配置防火墙放行规则 {rule_name}: TCP {','.join(map(str, ports))}"
+                + (f" UDP {','.join(map(str, udp_ports))}" if udp_ports else "")
             )
         except Exception:
             pass
@@ -1822,6 +1833,22 @@ def collect_firewall_ports():
     """汇总需要放行的对外端口：HTTP + HTTPS + WebDAV（启用时），去重保序。"""
     ports = [config.port]
     if config.ssl_enabled and config.ssl_port and config.ssl_port != config.port:
+        ports.append(config.ssl_port)
+    if getattr(config, "webdav_enabled", False) and getattr(config, "webdav_port", None):
+        ports.append(config.webdav_port)
+    return list(dict.fromkeys(ports))
+
+
+def collect_firewall_udp_ports():
+    """HTTP/3(QUIC) 需放行的 UDP 端口：Caddy 在所有 TLS 端口提供 QUIC。"""
+    if not (
+        config.ssl_enabled
+        and getattr(config, "caddy_enabled", False)
+        and getattr(config, "caddy_http3", True)
+    ):
+        return []
+    ports = []
+    if config.ssl_port:
         ports.append(config.ssl_port)
     if getattr(config, "webdav_enabled", False) and getattr(config, "webdav_port", None):
         ports.append(config.webdav_port)
@@ -1931,7 +1958,7 @@ def run_headless_server():
             pass
 
     _append_svc_diag("headless 服务器已创建: " + ", ".join(n for n, _ in servers))
-    apply_firewall_rules(collect_firewall_ports())  # 放行 HTTP/HTTPS/WebDAV 端口
+    apply_firewall_rules(collect_firewall_ports(), collect_firewall_udp_ports())  # 放行 HTTP/HTTPS/WebDAV + HTTP3(UDP)
     _maybe_start_webdav()  # 可选 WebDAV 独立端口
     executor = ThreadPoolExecutor(max_workers=max(1, len(servers)))
     futures = [executor.submit(run) for _, run in servers]
