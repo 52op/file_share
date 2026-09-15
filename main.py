@@ -2520,6 +2520,22 @@ class FileShareApp:
         )
         self.page_settings_btn.pack(side=LEFT, pady=10, padx=(10, 0))
 
+        # "可选组件"按钮（地图数据等大文件一键下载）
+        self.components_btn = ttk.Button(
+            btn_frame,
+            text="📦 组件",
+            command=self.open_components_dialog,
+            style="secondary.TButton",
+        )
+        self.components_btn.pack(side=LEFT, pady=10, padx=(10, 0))
+        ToolTip(self.components_btn, "可选组件管理：IP 地理定位库等大文件一键下载/状态查看")
+
+    def open_components_dialog(self):
+        from components_dialog import ComponentsDialog
+
+        dialog = ComponentsDialog(self.root, self.style)
+        self.root.wait_window(dialog)
+
     def _sync_webdav_config(self, quiet=False):
         """将 GUI WebDAV 开关/端口同步到 config 并保存（端口修改后启动前调用）。"""
         if not hasattr(self, "webdav_var"):

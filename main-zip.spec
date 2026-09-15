@@ -54,6 +54,8 @@ a = Analysis(
         "cleanup_manager",
         "ssl_manager",
         "ssl_settings_dialog",
+        "component_manager",
+        "components_dialog",
         "cheroot_server",
         # 条件导入的模块（在 try/except 中）
         "pypinyin",

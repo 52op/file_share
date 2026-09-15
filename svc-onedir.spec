@@ -48,6 +48,8 @@ a = Analysis(
         "cleanup_manager",
         "ssl_manager",
         "ssl_settings_dialog",
+        "component_manager",
+        "components_dialog",
         "pyotp",
         "cheroot_server",
         "pypinyin",
