@@ -7,12 +7,17 @@
                     id="visitorTotal" class="fw-semibold">-</span> 次</span>
         </div>
         <div class="card">
-            <div class="card-body p-2">
+            <div class="card-body p-2 position-relative">
+                <button type="button" id="backToWorld"
+                        class="btn btn-sm btn-outline-secondary d-none position-absolute"
+                        style="top:16px;left:16px;z-index:10">
+                    <i class="bi bi-arrow-left me-1"></i>世界
+                </button>
                 <div id="visitorMap" style="width:100%;height:72vh;"></div>
             </div>
         </div>
         <div class="text-muted small mt-2">
-            <i class="bi bi-info-circle me-1"></i>按来访 IP 所属国家/地区统计（首页访问事件），悬停查看数量。
+            <i class="bi bi-info-circle me-1"></i>按来访 IP 所属国家/地区统计（首页访问事件），悬停查看数量；点击中国查看省份分布。
         </div>
     </div>
 {% endblock %}
@@ -20,81 +25,110 @@
 {% block scripts %}
     <script src="/static/vendor/echarts.min.js"></script>
     <script>
-        /* 来访分布世界地图：worldEN(英文键) + nameMap(中文显示) */
+        /* 来访分布：世界地图（点击中国下钻省份）+ 中文 nameMap */
         (function () {
             var el = document.getElementById('visitorMap');
             if (!el || typeof echarts === 'undefined') return;
             var chart = echarts.init(el);
-            window.addEventListener('resize', function () { chart.resize(); });
+            var backBtn = document.getElementById('backToWorld');
+            var view = 'world';
+            var zhNames = {}, worldData = [], chinaData = [];
 
-            fetch('/static/map/worldEN.json')
-                .then(function (r) { return r.json(); })
-                .then(function (geo) {
-                    echarts.registerMap('world', geo);
-                    return Promise.all([
-                        fetch('/api/visitors/map').then(function (r) { return r.json(); }),
-                        fetch('/static/map/country-name-map-zh.json').then(function (r) { return r.json(); })
-                    ]);
-                })
-                .then(function (res) {
-                    var data = res[0], zhNames = res[1];
-                    var total = data.total || 0;
-                    var tEl = document.getElementById('visitorTotal');
-                    if (tEl) tEl.textContent = total.toLocaleString();
+            Promise.all([
+                fetch('/static/map/worldEN.json').then(function (r) { return r.json(); }),
+                fetch('/static/map/china.json').then(function (r) { return r.json(); }),
+                fetch('/static/map/country-name-map-zh.json').then(function (r) { return r.json(); }),
+                fetch('/api/visitors/map').then(function (r) { return r.json(); }),
+                fetch('/api/visitors/provinces').then(function (r) { return r.json(); })
+            ]).then(function (res) {
+                var geoWorld = res[0], geoChina = res[1];
+                zhNames = res[2] || {};
+                var data = res[3], prov = res[4];
 
-                    var perName = {};
-                    (data.countries || []).forEach(function (c) {
-                        perName[c.country] = c.count;
-                    });
-                    var mapData = Object.keys(perName).map(function (name) {
-                        return { name: name, value: perName[name] };
-                    });
-                    var maxV = mapData.reduce(function (m, d) { return Math.max(m, d.value); }, 0);
+                var total = data.total || 0;
+                var tEl = document.getElementById('visitorTotal');
+                if (tEl) tEl.textContent = total.toLocaleString();
 
-                    chart.setOption({
-                        backgroundColor: 'transparent',
-                        tooltip: {
-                            trigger: 'item',
-                            formatter: function (params) {
-                                var zh = (zhNames && zhNames[params.name]) || params.name;
-                                return zh + '<br/>来访: <b>' + (params.value || 0) + '</b> 次';
-                            }
-                        },
-                        visualMap: {
-                            min: 0,
-                            max: Math.max(1, maxV),
-                            left: 16,
-                            bottom: 16,
-                            text: ['多', '少'],
-                            calculable: false,
-                            itemHeight: 120,
-                            inRange: {
-                                color: ['#eef2ff', '#c7d2fe', '#93b4f8', '#5b8def', '#1f5bd6']
-                            }
-                        },
-                        series: [{
-                            type: 'map',
-                            map: 'world',
-                            roam: true,
-                            scaleLimit: { min: 1, max: 12 },
-                            selectedMode: false,
-                            label: { show: false },
-                            emphasis: {
-                                label: { show: true },
-                                itemStyle: {
-                                    areaColor: '#ffb84d',
-                                    shadowBlur: 8,
-                                    shadowColor: 'rgba(0,0,0,.15)'
-                                }
-                            },
-                            data: mapData
-                        }]
-                    });
-                    window.dispatchEvent(new Event('resize'));
-                })
-                .catch(function () {
-                    el.innerHTML = '<div class="text-center text-muted py-5"><i class="bi bi-exclamation-circle me-2"></i>地图加载失败</div>';
+                var perName = {};
+                (data.countries || []).forEach(function (c) { perName[c.country] = c.count; });
+                worldData = Object.keys(perName).map(function (name) {
+                    return { name: name, value: perName[name] };
                 });
+                chinaData = (prov.provinces || []).map(function (p) {
+                    return { name: p.province, value: p.count };
+                });
+
+                echarts.registerMap('world', geoWorld);
+                echarts.registerMap('china', geoChina);
+                renderWorld();
+                window.dispatchEvent(new Event('resize'));
+            }).catch(function () {
+                el.innerHTML = '<div class="text-center text-muted py-5"><i class="bi bi-exclamation-circle me-2"></i>地图加载失败</div>';
+            });
+
+            function renderWorld() {
+                view = 'world';
+                if (backBtn) backBtn.classList.add('d-none');
+                chart.setOption(optionOf('world', worldData, function (params) {
+                    var zh = zhNames[params.name] || params.name;
+                    return zh + '<br/>来访: <b>' + (params.value || 0) + '</b> 次';
+                }), true);
+            }
+
+            function renderChina() {
+                view = 'china';
+                if (backBtn) backBtn.classList.remove('d-none');
+                chart.setOption(optionOf('china', chinaData, function (params) {
+                    return (params.name || '') + '<br/>来访: <b>' + (params.value || 0) + '</b> 次';
+                }), true);
+            }
+
+            function optionOf(mapName, data, tipFmt) {
+                var maxV = data.reduce(function (m, d) { return Math.max(m, d.value); }, 0);
+                return {
+                    backgroundColor: 'transparent',
+                    tooltip: { trigger: 'item', formatter: tipFmt },
+                    visualMap: {
+                        min: 0,
+                        max: Math.max(1, maxV),
+                        left: 16,
+                        bottom: 16,
+                        text: ['多', '少'],
+                        calculable: false,
+                        itemHeight: 120,
+                        inRange: {
+                            color: ['#eef2ff', '#c7d2fe', '#93b4f8', '#5b8def', '#1f5bd6']
+                        }
+                    },
+                    series: [{
+                        type: 'map',
+                        map: mapName,
+                        roam: true,
+                        scaleLimit: { min: 1, max: 12 },
+                        selectedMode: false,
+                        label: { show: false },
+                        emphasis: {
+                            label: { show: true },
+                            itemStyle: {
+                                areaColor: '#ffb84d',
+                                shadowBlur: 8,
+                                shadowColor: 'rgba(0,0,0,.15)'
+                            }
+                        },
+                        data: data
+                    }]
+                };
+            }
+
+            chart.on('click', function (params) {
+                if (view === 'world' && params.name === 'China') {
+                    renderChina();
+                }
+            });
+            if (backBtn) {
+                backBtn.addEventListener('click', renderWorld);
+            }
+            window.addEventListener('resize', function () { chart.resize(); });
         })();
     </script>
 {% endblock %}

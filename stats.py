@@ -31,7 +31,7 @@ EVENT_AUTH = ('auth_fail', 'auth_ok')
 # 安全/管理事件：同步立即写，不排队（追责类不能丢）
 SYNC_TYPES = {'auth_fail', 'auth_ok', 'log_admin', 'block', 'unblock'}
 
-_EVENT_COLS = ('ts', 'type', 'role', 'alias', 'file', 'size', 'ip', 'ua', 'target', 'detail')
+_EVENT_COLS = ('ts', 'type', 'role', 'alias', 'file', 'size', 'ip', 'ua', 'target', 'detail', 'province')
 
 
 def _get_app_path_safe():
@@ -56,8 +56,16 @@ def configure(dirpath):
     _conn.execute(
         """CREATE TABLE IF NOT EXISTS events (
             ts INTEGER, type TEXT, role TEXT, alias TEXT, file TEXT,
-            size INTEGER, ip TEXT, ua TEXT, target TEXT, detail TEXT)"""
+            size INTEGER, ip TEXT, ua TEXT, target TEXT, detail TEXT,
+            province TEXT)"""
     )
+    # 旧库迁移：无 province 列时补上（幂等）
+    try:
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(events)").fetchall()]
+        if "province" not in cols:
+            _conn.execute("ALTER TABLE events ADD COLUMN province TEXT")
+    except Exception:
+        pass
     _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts)")
     _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
     _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(ip, ts)")
@@ -100,7 +108,8 @@ def _flush_locked():
     rows, _queue = _queue, []
     try:
         _conn.executemany(
-            "INSERT INTO events(ts,type,role,alias,file,size,ip,ua,target,detail) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO events(ts,type,role,alias,file,size,ip,ua,target,detail,province) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
         _conn.commit()
@@ -134,12 +143,14 @@ def record_event(**kw):
         "ua": (kw.get("ua") or "")[:500],
         "target": kw.get("target") or "",
         "detail": str(kw.get("detail"))[:1000] if kw.get("detail") else "",
+        "province": (kw.get("province") or "")[:100],
     }
     row = tuple(ev[k] for k in _EVENT_COLS)
     if ev["type"] in SYNC_TYPES:
         with _lock:
             _conn.execute(
-                "INSERT INTO events(ts,type,role,alias,file,size,ip,ua,target,detail) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO events(ts,type,role,alias,file,size,ip,ua,target,detail,province) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 row,
             )
             _conn.commit()
@@ -215,7 +226,7 @@ def query_events(start=None, end=None, etype=None, role=None, keyword=None, page
     with _lock:
         total = _conn.execute(f"SELECT COUNT(*) FROM events {w}", params).fetchone()[0]
         rows = _conn.execute(
-            f"SELECT ts,type,role,alias,file,size,ip,ua,target,detail FROM events {w} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            f"SELECT ts,type,role,alias,file,size,ip,ua,target,detail,province FROM events {w} ORDER BY ts DESC LIMIT ? OFFSET ?",
             params + [size, (page - 1) * size],
         ).fetchall()
     return {"total": total, "page": page, "size": size, "events": _rows_to_events(rows)}
@@ -318,6 +329,20 @@ def visitor_countries(start=None, end=None):
             params,
         ).fetchall()
     return [{"country": d, "count": c} for d, c in rows]
+
+
+def visitor_provinces(start=None, end=None):
+    """按中国省份聚合首页访问（省份存于 province 字段）。返回 [{province, count}]。"""
+    _ensure()
+    _flush_before_read()
+    w, params = _visitor_where(start, end)
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT province, COUNT(*) FROM events {w} AND province!='' "
+            "GROUP BY province ORDER BY COUNT(*) DESC",
+            params,
+        ).fetchall()
+    return [{"province": d, "count": c} for d, c in rows]
 
 
 def delete_range(start=None, end=None):

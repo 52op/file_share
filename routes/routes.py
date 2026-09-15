@@ -747,13 +747,19 @@ def index():
         for dir_obj in config.shared_dirs.values()
     ]
 
-    # 首页访问统计（来访计数 / 全球分布）：记录为目录访问“/”，国家(英文)存 detail。
-    # 经 Caddy 反代访问时 _visitor_ip 取 X-Forwarded-For 第一跳，修复来源 IP 恒为 127.0.0.1 的问题。
+    # 首页访问统计（来访计数 / 全球分布）：记录为目录访问“/”，国家(英文)存 detail、
+    # 省份存 province。经 Caddy 反代访问时 _visitor_ip 取 X-Forwarded-For 第一跳，
+    # 修复来源 IP 恒为 127.0.0.1 的问题。
     try:
+        visits_ip = _visitor_ip()
+        _country, _province = geoip.ip_geo(visits_ip)
         stats.record_view_dir(
             '/', role=_current_role(''), alias='',
-            detail=geoip.ip_country(_visitor_ip()) or '',
-            **_req_client())
+            detail=_country or '',
+            province=_province or '',
+            ip=visits_ip,
+            ua=(request.user_agent.string or '') if request.user_agent else '',
+        )
     except Exception:
         pass
 
@@ -782,6 +788,15 @@ def visitors_map():
         })
     except Exception:
         return jsonify({'countries': [], 'total': 0})
+
+
+@flask_app.route('/api/visitors/provinces')
+def visitors_provinces():
+    """按中国省份聚合的首页访问分布（公开，下钻中国地图用）。"""
+    try:
+        return jsonify({'provinces': stats.visitor_provinces()})
+    except Exception:
+        return jsonify({'provinces': []})
 
 
 @flask_app.route('/visitors')

@@ -54,6 +54,27 @@ def test_geoip_country_normalization(monkeypatch):
     assert geoip.ip_country(None) is None
 
 
+def test_geoip_province(monkeypatch):
+    """ip_geo：中国提取省份（含简称规整），非中国/内网返回省为 None。"""
+
+    class FakeSearcher:
+        def search(self, ip):
+            return {
+                "113.118.113.77": "中国|广东省|深圳市|电信|CN",
+                "221.122.0.1": "中国|内蒙古|呼和浩特市|联通|CN",
+                "8.8.8.8": "United States|California|0|Google LLC|US",
+                "127.0.0.1": "Reserved|Reserved|0|0|0",
+            }.get(ip, "")
+
+    monkeypatch.setattr(geoip, "_searcher", FakeSearcher())
+    assert geoip.ip_geo("113.118.113.77") == ("China", "广东省")
+    assert geoip.ip_geo("221.122.0.1") == ("China", "内蒙古自治区")  # 简称规整
+    assert geoip.ip_geo("8.8.8.8") == ("United States", None)  # 非中国不记省
+    assert geoip.ip_geo("127.0.0.1") == (None, None)
+    assert geoip.ip_geo("") == (None, None)
+    assert geoip.ip_country("113.118.113.77") == "China"  # 兼容入口
+
+
 # ---------------- stats 聚合 ----------------
 
 def test_stats_visitor_aggregate(stat):
@@ -111,3 +132,26 @@ def test_direct_access_no_xff_keeps_remote_addr(client, app, stat):
     ev = _last_home_visit()
     assert ev is not None
     assert ev["ip"] == "127.0.0.1"
+
+
+def test_stats_visitor_provinces(stat):
+    """按省份聚合首页访问；无省份(外网/未知)不参与。"""
+    stats.record_view_dir("/", role="anonymous", alias="", detail="China", province="广东省")
+    stats.record_view_dir("/", role="anonymous", alias="", detail="China", province="")
+    stats.record_view_dir("/", role="anonymous", alias="", detail="US", province="")
+    stats._flush_now()
+    ps = stats.visitor_provinces()
+    assert {"province": "广东省", "count": 1} in ps
+    assert all(p["province"] for p in ps), "省份分布不应含空省"
+
+
+def test_provinces_api(client, app, stat):
+    """省份分布 API：包含手工记录 + 真实首页访问的省份。"""
+    stats.record_view_dir("/", role="anonymous", alias="", detail="China", province="广东省")
+    client.get("/")
+    r = client.get("/api/visitors/provinces")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert isinstance(d["provinces"], list)
+    names = [p["province"] for p in d["provinces"]]
+    assert "广东省" in names
