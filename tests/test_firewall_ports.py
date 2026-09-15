@@ -55,3 +55,48 @@ def test_udp_ports_no_ssl():
     cfg.caddy_enabled = True
     cfg.caddy_http3 = True
     assert main.collect_firewall_udp_ports() == []
+
+
+def test_apply_firewall_rules_builds_commands(monkeypatch):
+    """apply：delete 一次 + 逐端口 TCP/UDP in/out 规则；全部成功返回 True。"""
+    calls = []
+
+    class R:
+        returncode = 0
+        stdout = "Ok."
+        stderr = ""
+
+    def fake_run(cmd, shell=False, capture_output=False, text=False,
+                 creationflags=0, timeout=None):
+        calls.append(cmd)
+        return R()
+
+    monkeypatch.setattr("main.subprocess.run", fake_run)
+    ok = main.apply_firewall_rules([12345, 12346], udp_ports=[12346])
+    assert ok is True
+    deletes = [c for c in calls if "delete rule" in c]
+    adds = [c for c in calls if "add rule" in c]
+    assert len(deletes) == 1
+    assert len(adds) == 6  # TCP in/out×2 + UDP in/out×1
+    assert adds[0].startswith(
+        'netsh advfirewall firewall add rule name="File_Share_Port" '
+        'dir=in action=allow protocol=TCP localport=12345'
+    ), adds[0]
+    assert any("protocol=UDP localport=12346" in c and "dir=out" in c for c in adds)
+
+
+def test_apply_firewall_rules_reports_failure(monkeypatch):
+    """任一 add 失败：返回 False（调用方据此告警），失败原因进入日志。"""
+
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "requested operation requires elevation (Run as administrator)"
+
+    def fake_run(cmd, shell=False, capture_output=False, text=False,
+                 creationflags=0, timeout=None):
+        return R()
+
+    monkeypatch.setattr("main.subprocess.run", fake_run)
+    ok = main.apply_firewall_rules([12345])
+    assert ok is False, "任一规则失败应返回 False，避免静默"

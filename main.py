@@ -1524,7 +1524,10 @@ class FileShareService(win32serviceutil.ServiceFramework):
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
 
             # 添加防火墙规则（HTTP + HTTPS + WebDAV + HTTP3 UDP）
-            apply_firewall_rules(collect_firewall_ports(), collect_firewall_udp_ports())
+            if not apply_firewall_rules(collect_firewall_ports(), collect_firewall_udp_ports()):
+                self.logger.warning(
+                    "防火墙规则配置失败（服务账户无权限或系统策略限制），外网可能无法访问"
+                )
 
             if config.auto_cleanup and not is_cleanup_running():
                 start_cleanup_thread()  # 启动清理线程
@@ -1779,54 +1782,83 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 self.logger.info(f"删除防火墙规则 {name} 失败: {e}")
 
 
+def _netsh_add_rule(name, protocol, port, direction):
+    """执行单条 netsh 防火墙规则命令，返回 (是否成功, 错误信息)。
+
+    失败原因（如 Win7 非管理员报「要求提升」）会被提取出来供日志排查。
+    """
+    cmd = (
+        f'netsh advfirewall firewall add rule name="{name}" '
+        f"dir={direction} action=allow protocol={protocol} localport={port}"
+    )
+    try:
+        r = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=90,
+        )
+        if r.returncode == 0:
+            return True, ""
+        detail = ((r.stdout or "") + (r.stderr or "")).strip()
+        detail = detail.replace("\r", " ").replace("\n", " ")[:200]
+        return False, detail or f"returncode={r.returncode}"
+    except Exception as e:
+        return False, str(e)[:200]
+
+
 def apply_firewall_rules(ports, udp_ports=None):
     """为端口列表统一添加防火墙放行规则（入站+出站，规则名 File_Share_Port）。
 
-    模块级函数，供 headless 模式与 Windows 服务模式共用；端口列表应包含
-    HTTP、HTTPS(Caddy) 与 WebDAV 对外端口。udp_ports 额外放行 UDP
-    （HTTP/3/QUIC 需要）。失败静默（无管理员权限时忽略）。
+    供 headless / 系统服务 / GUI 前台共用。逐端口创建（部分 Windows 版本
+    的 netsh 不接受 `localport=a,b,c` 逗号列表，单端口最兼容）。
 
-    注意：逐端口创建规则——部分 Windows 版本的 netsh 不接受
-    `localport=a,b,c` 逗号列表（报「指定的值无效」），单端口最兼容。
+    返回是否全部成功；失败明细写入 loguru 日志——此前静默吞异常导致
+    无管理员权限等失败完全不可见。非管理员运行 GUI / 服务账户权限不足
+    时，日志会明确给出失败原因。
     """
+    ports = list(dict.fromkeys(int(p) for p in ports if p))
+    udp_ports = list(dict.fromkeys(int(p) for p in (udp_ports or []) if p))
+    if not ports and not udp_ports:
+        return True
+
+    rule_name = "File_Share_Port"
     try:
-        ports = list(dict.fromkeys(int(p) for p in ports if p))
-        udp_ports = list(dict.fromkeys(int(p) for p in (udp_ports or []) if p))
-        if not ports and not udp_ports:
-            return
-        rule_name = "File_Share_Port"
+        # delete 命名规则含历史残留；不存在时 netsh 报错无妨
         subprocess.run(
             f'netsh advfirewall firewall delete rule name="{rule_name}"',
             shell=True, capture_output=True, text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=90,
         )
-        for p in ports:
-            for direction in ("in", "out"):
-                subprocess.run(
-                    f'netsh advfirewall firewall add rule name="{rule_name}" '
-                    f"dir={direction} action=allow protocol=TCP localport={p}",
-                    shell=True, capture_output=True, text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-        for p in udp_ports:
-            for direction in ("in", "out"):
-                subprocess.run(
-                    f'netsh advfirewall firewall add rule name="{rule_name}" '
-                    f"dir={direction} action=allow protocol=UDP localport={p}",
-                    shell=True, capture_output=True, text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-        try:
-            import loguru
+    except Exception:
+        pass
 
+    failures = []
+    for p in ports:
+        for direction in ("in", "out"):
+            ok, err = _netsh_add_rule(rule_name, "TCP", p, direction)
+            if not ok:
+                failures.append(f"TCP {p} {direction}: {err}")
+    for p in udp_ports:
+        for direction in ("in", "out"):
+            ok, err = _netsh_add_rule(rule_name, "UDP", p, direction)
+            if not ok:
+                failures.append(f"UDP {p} {direction}: {err}")
+
+    try:
+        import loguru
+
+        if failures:
+            loguru.logger.warning(
+                f"防火墙规则配置不完整({len(failures)} 条失败，通常因未以管理员身份"
+                f"运行或系统安全策略限制): {'; '.join(failures)}"
+            )
+        else:
             loguru.logger.info(
                 f"已配置防火墙放行规则 {rule_name}: TCP {','.join(map(str, ports))}"
                 + (f" UDP {','.join(map(str, udp_ports))}" if udp_ports else "")
             )
-        except Exception:
-            pass
     except Exception:
         pass
+    return not failures
 
 
 def collect_firewall_ports():
@@ -1958,7 +1990,9 @@ def run_headless_server():
             pass
 
     _append_svc_diag("headless 服务器已创建: " + ", ".join(n for n, _ in servers))
-    apply_firewall_rules(collect_firewall_ports(), collect_firewall_udp_ports())  # 放行 HTTP/HTTPS/WebDAV + HTTP3(UDP)
+    if not apply_firewall_rules(collect_firewall_ports(), collect_firewall_udp_ports()):
+        _append_svc_diag("防火墙规则配置失败（服务账户无权限或系统策略限制），外网可能无法访问")
+
     _maybe_start_webdav()  # 可选 WebDAV 独立端口
     executor = ThreadPoolExecutor(max_workers=max(1, len(servers)))
     futures = [executor.submit(run) for _, run in servers]
@@ -3750,6 +3784,20 @@ class FileShareApp:
                 self.server_thread.daemon = True
                 self.server_thread.start()
                 _maybe_start_webdav()  # 可选 WebDAV 独立端口
+
+                # GUI 前台模式同样配置防火墙放行（此前仅 headless/系统服务有该逻辑，
+                # 前台启动时从未放行端口；且非管理员运行会失败——不再静默，给出明确提示）
+                try:
+                    _fw_ok = apply_firewall_rules(
+                        collect_firewall_ports(), collect_firewall_udp_ports()
+                    )
+                    if not _fw_ok:
+                        self.logger.warning(
+                            "防火墙规则配置失败：请以管理员身份运行本程序后重新启动，"
+                            "或手动在防火墙放行上述端口，否则外网无法访问。"
+                        )
+                except Exception as e:
+                    self.logger.warning(f"防火墙规则配置异常: {e}")
 
                 server_type = "Cheroot" if config.use_waitress else "Werkzeug"
                 flask_app.logger.info(
