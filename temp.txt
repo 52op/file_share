@@ -18,3 +18,8 @@ user_agents
 cheroot
 Werkzeug
 waitress
+# WebDAV（可选，默认关闭；独立端口）
+wsgidav
+defusedxml
+# 来访地图 IP 地理定位（可选；xdb 数据文件运行时从 GUI「组件」下载）
+py-ip2region

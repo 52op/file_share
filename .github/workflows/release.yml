@@ -47,10 +47,18 @@ jobs:
           python -c "import pystray; print('pystray ok:', pystray.__version__)"
           python -c "import pyotp; print('pyotp ok:', pyotp.__name__)"
           python -c "import cryptography; print('cryptography ok:', cryptography.__version__)"
+          python -c "import wsgidav, defusedxml; print('wsgidav/defusedxml ok')"
+          python -c "import ip2region.searcher, ip2region.util; print('ip2region ok')"
           # 固定 PyInstaller 4.10（与 requirements.txt 一致）：
           # 后台服务使用 NSSM 托管 --headless-server，任何版本均可；
           # 保留 4.10 作为无 NSSM 时 pywin32 直接服务回退路径的兼容基线。
           pip install "pyinstaller==4.10" "pyinstaller-hooks-contrib==2022.15"
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          pip install pytest
+          python -m pytest tests -q
 
       - name: Build onefile exe
         run: |
