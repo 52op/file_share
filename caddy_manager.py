@@ -13,6 +13,15 @@ import time
 import requests
 from loguru import logger
 
+# 服务器无系统 CA 证书环境(精简 Windows/打包缺 certifi)下证书验证常失败，
+# 下载公开二进制文件关闭校验可接受
+try:
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+
 
 # ---------------------------------------------------------------------------
 # 支持的 DNS 提供商（含 Caddy 插件名、环境变量、Caddyfile 配置生成）
@@ -492,6 +501,7 @@ class CaddyManager:
                     stream=True,
                     timeout=(15, 480),
                     headers=headers,
+                    verify=False,
                 ) as r:
                     # 服务器支持续传返回 206；不支持则返回 200（从头下载）
                     if r.status_code == 200 and existing > 0:

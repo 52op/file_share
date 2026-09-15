@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-"""可选组件管理：状态判定、下载（断点续传/进度/小文件拒绝）。"""
+"""可选组件管理：状态判定、下载（断点续传/进度/小文件拒绝/镜像回退）。"""
 import os
+
+import requests
 
 import component_manager as cm
 
@@ -60,7 +62,8 @@ def test_status_ok_and_downloading(tmp_path, monkeypatch):
 def test_download_success_with_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(cm, "_get_app_path", lambda: str(tmp_path))
 
-    def fake_get(url, stream=False, timeout=None, headers=None):
+    def fake_get(url, stream=False, timeout=None, headers=None, **kw):
+        assert kw.get("verify") is False, "应关闭 SSL 校验(兼容无系统CA环境)"
         return _Resp([_mega(1)] * 6, status=200)  # 6MB
 
     monkeypatch.setattr(cm.requests, "get", fake_get)
@@ -74,6 +77,25 @@ def test_download_success_with_progress(tmp_path, monkeypatch):
     assert not os.path.exists(p + ".download"), "成功后临时文件应已替换"
 
 
+def test_download_fallback_to_mirror(tmp_path, monkeypatch):
+    """官方源连接失败 → 自动切换到加速镜像（gh-proxy）。"""
+    monkeypatch.setattr(cm, "_get_app_path", lambda: str(tmp_path))
+    calls = []
+
+    def fake_get(url, stream=False, timeout=None, headers=None, **kw):
+        calls.append(url)
+        if url.startswith("https://raw.githubusercontent.com"):
+            raise requests.exceptions.ConnectionError("official source down")
+        return _Resp([_mega(1)] * 6, status=200)
+
+    monkeypatch.setattr(cm.requests, "get", fake_get)
+    ok, _ = cm.download_component("ip2region", max_retries=0)
+    assert ok
+    assert len(calls) == 2, calls
+    assert "gh-proxy.com" in calls[-1], "应回退到镜像源"
+    assert os.path.getsize(cm.get_component_path("ip2region")) == 6 * 1024 * 1024
+
+
 def test_download_resume(tmp_path, monkeypatch):
     """断点续传：已有 .download 从 Range 继续，最终完整替换。"""
     monkeypatch.setattr(cm, "_get_app_path", lambda: str(tmp_path))
@@ -81,8 +103,9 @@ def test_download_resume(tmp_path, monkeypatch):
     with open(p + ".download", "wb") as f:
         f.write(_mega(3))  # 已有 3MB
 
-    def fake_get(url, stream=False, timeout=None, headers=None):
+    def fake_get(url, stream=False, timeout=None, headers=None, **kw):
         assert headers.get("Range") == "bytes=3145728-", headers
+        assert kw.get("verify") is False
         return _Resp([_mega(1)] * 3, status=206)
 
     monkeypatch.setattr(cm.requests, "get", fake_get)
@@ -98,7 +121,7 @@ def test_download_rejects_small_file(tmp_path, monkeypatch):
     with open(p, "wb") as f:
         f.write(_mega(6))  # 原有的合法文件
 
-    def fake_get(url, stream=False, timeout=None, headers=None):
+    def fake_get(url, stream=False, timeout=None, headers=None, **kw):
         return _Resp([b"tiny"], status=200)
 
     monkeypatch.setattr(cm.requests, "get", fake_get)
