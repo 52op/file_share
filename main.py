@@ -2449,6 +2449,54 @@ class FileShareApp:
         )
         self.page_settings_btn.pack(side=LEFT, pady=10, padx=(10, 0))
 
+        # WebDAV（可选，独立端口）
+        webdav_frame = ttk.Frame(self.main_frame)
+        webdav_frame.pack(fill="x", padx=10)
+        self.webdav_var = tk.BooleanVar(value=bool(getattr(config, "webdav_enabled", False)))
+        self.webdav_checkbox = ttk.Checkbutton(
+            webdav_frame,
+            text="启用 WebDAV",
+            variable=self.webdav_var,
+            command=self._sync_webdav_config,
+            style="squared-toggle",
+        )
+        self.webdav_checkbox.pack(side=LEFT, pady=(0, 4))
+        ttk.Label(webdav_frame, text="端口").pack(side=LEFT, padx=(12, 2))
+        self.webdav_port_var = tk.StringVar(value=str(getattr(config, "webdav_port", 8081)))
+        self.webdav_port_entry = ttk.Entry(webdav_frame, width=8, textvariable=self.webdav_port_var)
+        self.webdav_port_entry.pack(side=LEFT, pady=(0, 4))
+        ToolTip(
+            self.webdav_checkbox,
+            "启用后独立端口提供 WebDAV 挂载\n"
+            "（Windows 映射网络驱动器 / 手机文件管理器）\n"
+            "用户名：admin=管理密码(全读写)、dir_<目录>＝目录管理密码(该目录读写)、\n"
+            "guest=全局密码(全只读)、<目录>=目录访问密码(该目录只读)",
+        )
+
+    def _sync_webdav_config(self, quiet=False):
+        """将 GUI WebDAV 开关/端口同步到 config 并保存（端口修改后启动前调用）。"""
+        if not hasattr(self, "webdav_var"):
+            return
+        try:
+            new_port = int(self.webdav_port_var.get() or 8081)
+        except (TypeError, ValueError):
+            new_port = 8081
+        changed = (config.webdav_enabled != self.webdav_var.get()
+                   or config.webdav_port != new_port)
+        config.webdav_enabled = self.webdav_var.get()
+        config.webdav_port = new_port
+        if changed:
+            config.save()
+        if changed and not quiet:
+            flask_app.logger.info(
+                f"WebDAV 已{'启用' if config.webdav_enabled else '禁用'}，端口 {config.webdav_port}"
+            )
+            if self.service_status == 4 and tkmessagebox.askyesno(
+                "服务重启",
+                "后台服务正在运行，需要重启服务使 WebDAV 配置生效。是否重启？",
+            ):
+                self.restart_service()
+
     def create_log_area(self):
         # 日志显示区域
         self.log_area = ScrolledText(
@@ -3194,6 +3242,7 @@ class FileShareApp:
 
     def toggle_server(self):
         global serverUrl, runningPort
+        self._sync_webdav_config(quiet=True)  # 同步 GUI WebDAV 开关/端口到配置
         if not config.shared_dirs:
             self.log_area.insert(END, "错误：请先添加至少一个共享目录\n")
             self.log_area.see(END)
