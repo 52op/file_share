@@ -136,24 +136,44 @@ def build_webdav_app(config):
 def start_webdav(config):
     """在独立端口启动 WebDAV server（线程，daemon）。启用则返回 server，否则 None。
 
-    绑定的地址/端口由 caddy_manager.webdav_internal_addr 决定：
-    Caddy HTTPS 模式下绑 127.0.0.1 内部端口（Caddy 对外监听 webdav_port 做 TLS 反代），
-    否则直接绑 0.0.0.0:webdav_port。
+    绑定模式（见 caddy_manager.webdav_internal_addr / webdav_uses_tls）：
+    - Caddy HTTPS 模式：绑 127.0.0.1 内部端口（HTTP），Caddy 对外监听 webdav_port 做 TLS 反代
+    - 手动证书模式（ssl_enabled 且证书有效）：绑 0.0.0.0:webdav_port 直接 HTTPS
+    - 其他：绑 0.0.0.0:webdav_port 裸 HTTP
     """
     if not getattr(config, "webdav_enabled", False):
         return None
     try:
-        from cheroot.wsgi import Server as CherootWSGIServer
-
         app = build_webdav_app(config)
         try:
-            from caddy_manager import webdav_internal_addr
+            from caddy_manager import webdav_internal_addr, webdav_uses_tls
 
             bind_host, port = webdav_internal_addr(config)
+            use_tls = webdav_uses_tls(config)
         except Exception:
             bind_host = "0.0.0.0"
             port = int(getattr(config, "webdav_port", 8081) or 8081)
-        server = CherootWSGIServer((bind_host, port), app, numthreads=10)
+            use_tls = False
+
+        if use_tls:
+            # 手动证书模式：webdav 端口直接绑定 TLS（不建 TLS server 的 Caddy 分支）
+            from ssl_manager import SSLCertificateManager
+
+            ssl_manager = SSLCertificateManager(config)
+            cert = ssl_manager.get_cert_file_path()
+            key = ssl_manager.get_key_file_path()
+            if not cert or not key:
+                raise FileNotFoundError("未找到可用的 SSL 证书/私钥，WebDAV HTTPS 无法启动")
+            from cheroot_server import CherootServer
+
+            server = CherootServer(
+                app, host=bind_host, port=port, ssl_cert=cert, ssl_key=key, threads=10
+            )
+            server.create_server()  # 提前创建，证书无效时立即失败而非静默不监听
+        else:
+            from cheroot.wsgi import Server as CherootWSGIServer
+
+            server = CherootWSGIServer((bind_host, port), app, numthreads=10)
         thread = threading.Thread(target=server.start, daemon=True)
         thread.start()
         return server

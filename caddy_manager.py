@@ -105,6 +105,47 @@ def webdav_internal_addr(config):
     return "0.0.0.0", port
 
 
+def _manual_cert_valid(config):
+    """非 Caddy 模式下证书（cert/key）是否齐全且有效。"""
+    try:
+        from ssl_manager import SSLCertificateManager
+
+        return bool(SSLCertificateManager(config).has_valid_certificate())
+    except Exception:
+        return False
+
+
+def webdav_external_scheme(config):
+    """WebDAV 对客户端展示的协议（给网页提示层用）。
+
+    与 webdav_uses_tls 语义不同：这是「对外是什么协议」，与内部监听是否 TLS 无关。
+    - Caddy 反代模式（ssl+caddy）：HTTPS（对外由 Caddy 终止 TLS，内部仍 HTTP）
+    - 手动证书模式（ssl 且证书有效）：HTTPS（webdav 直接绑 TLS）
+    - 其他（含证书缺失/过期）：HTTP 兜底
+    """
+    if not getattr(config, "ssl_enabled", False):
+        return "http"
+    if getattr(config, "caddy_enabled", False):
+        return "https"
+    if _manual_cert_valid(config):
+        return "https"
+    return "http"
+
+
+def webdav_uses_tls(config):
+    """WebDAV 监听本身是否启用 TLS（start_webdav 绑定用）。
+
+    注意与 webdav_external_scheme 区分：Caddy 模式下 webdav 内部仍是 HTTP
+    （TLS 由 Caddy 对外终止），绝不能在此处再套一层 TLS；只有手动证书模式
+    才在 webdav 端口直接绑定 TLS。
+    """
+    if not getattr(config, "ssl_enabled", False):
+        return False
+    if getattr(config, "caddy_enabled", False):
+        return False
+    return _manual_cert_valid(config)
+
+
 class CaddyManager:
     """Caddy 子进程管理：检测、Caddyfile 生成、启停、状态查询、一键下载"""
 

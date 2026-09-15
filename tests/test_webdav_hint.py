@@ -125,3 +125,16 @@ def test_hint_scheme_http_when_no_caddy(app, client):
     _set_webdav()
     hint = _open_hint(client, "/dir/pub")
     assert hint["base"].startswith("http://"), hint["base"]
+
+
+def test_hint_scheme_https_manual_cert(app, client, monkeypatch):
+    """手动证书有效（非 Caddy）：对外 scheme 应为 https（与 webdav_uses_tls 一致）。"""
+    import caddy_manager as cm
+
+    main.config.ssl_enabled = True
+    main.config.caddy_enabled = False
+    monkeypatch.setattr(cm, "_manual_cert_valid", lambda c: True)
+    _login_admin(client)
+    _set_webdav()
+    hint = _open_hint(client, "/dir/pub")
+    assert hint["base"].startswith("https://"), hint["base"]

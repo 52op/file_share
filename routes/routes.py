@@ -842,15 +842,14 @@ def list_dir(dirname):
     # WebDAV 挂载提示（面包屑上的图标 + popover）；仅 webdav 启用时注入
     webdav_hint = None
     if getattr(config, "webdav_enabled", False):
-        # 协议与 WebDAV 实际绑定模式严格一致（见 caddy_manager.webdav_internal_addr）：
-        # Caddy 反代模式（ssl_enabled+caddy_enabled）→ 对外 https；其他 → 裸 http。
+        # 对外协议与 WebDAV 实际绑定模式严格一致（见 caddy_manager.webdav_external_scheme）：
+        # Caddy 反代或手动证书有效 → https；否则 http。
         # 不能取 request.scheme / X-Forwarded-Proto——自签证书 HTTPS 模式下页面是
-        # https，但 webdav 仍走 http，照页面协议显示会给出不可达的 https 地址。
-        _caddy_mode = bool(
-            getattr(config, "ssl_enabled", False)
-            and getattr(config, "caddy_enabled", False)
-        )
-        _scheme = "https" if _caddy_mode else "http"
+        # https，但 webdav 可能仍是 http（证书缺失/过期时兜底），照页面协议显示
+        # 会给出不可达的 https 地址。
+        from caddy_manager import webdav_external_scheme
+
+        _scheme = webdav_external_scheme(config)
         _host = (request.host or "").split(":")[0]
         _port = int(getattr(config, "webdav_port", 8081) or 8081)
         _base = f"{_scheme}://{_host}:{_port}"
