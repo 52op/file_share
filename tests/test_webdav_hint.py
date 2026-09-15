@@ -104,3 +104,24 @@ def test_hint_disabled(app, client):
     _set_webdav(enabled=False)
     hint = _open_hint(client, "/dir/pub")
     assert hint is None
+
+
+def test_hint_scheme_https_in_caddy_mode(app, client):
+    """Caddy 反代模式（ssl+caddy 双开）：提示层应显示 https 地址。"""
+    main.config.ssl_enabled = True
+    main.config.caddy_enabled = True
+    _login_admin(client)
+    _set_webdav()
+    hint = _open_hint(client, "/dir/pub")
+    assert hint["base"].startswith("https://"), hint["base"]
+    assert "http://" not in hint["base"]
+
+
+def test_hint_scheme_http_when_no_caddy(app, client):
+    """自签证书 HTTPS（非 Caddy）模式：页面是 https，但 WebDAV 仍裸 http，提示也应 http。"""
+    main.config.ssl_enabled = True
+    main.config.caddy_enabled = False
+    _login_admin(client)
+    _set_webdav()
+    hint = _open_hint(client, "/dir/pub")
+    assert hint["base"].startswith("http://"), hint["base"]
