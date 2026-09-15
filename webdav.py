@@ -134,15 +134,26 @@ def build_webdav_app(config):
 
 
 def start_webdav(config):
-    """在独立端口启动 WebDAV server（线程，daemon）。启用则返回 server，否则 None。"""
+    """在独立端口启动 WebDAV server（线程，daemon）。启用则返回 server，否则 None。
+
+    绑定的地址/端口由 caddy_manager.webdav_internal_addr 决定：
+    Caddy HTTPS 模式下绑 127.0.0.1 内部端口（Caddy 对外监听 webdav_port 做 TLS 反代），
+    否则直接绑 0.0.0.0:webdav_port。
+    """
     if not getattr(config, "webdav_enabled", False):
         return None
     try:
         from cheroot.wsgi import Server as CherootWSGIServer
 
         app = build_webdav_app(config)
-        port = int(getattr(config, "webdav_port", 8081) or 8081)
-        server = CherootWSGIServer(("0.0.0.0", port), app, numthreads=10)
+        try:
+            from caddy_manager import webdav_internal_addr
+
+            bind_host, port = webdav_internal_addr(config)
+        except Exception:
+            bind_host = "0.0.0.0"
+            port = int(getattr(config, "webdav_port", 8081) or 8081)
+        server = CherootWSGIServer((bind_host, port), app, numthreads=10)
         thread = threading.Thread(target=server.start, daemon=True)
         thread.start()
         return server

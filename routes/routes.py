@@ -839,6 +839,51 @@ def list_dir(dirname):
 
     stats.record_view_dir(dirname, role=_current_role(base_dir), alias=base_dir, **_req_client())
 
+    # WebDAV 挂载提示（面包屑上的图标 + popover）；仅 webdav 启用时注入
+    webdav_hint = None
+    if getattr(config, "webdav_enabled", False):
+        # 经 Caddy 反代访问时后端为 HTTP，优先取 X-Forwarded-Proto 反映外部真实协议
+        _scheme = request.scheme
+        _fwd_proto = request.headers.get("X-Forwarded-Proto", "")
+        if _fwd_proto:
+            _scheme = _fwd_proto.split(",")[0].strip()
+        _host = (request.host or "").split(":")[0]
+        _port = int(getattr(config, "webdav_port", 8081) or 8081)
+        _base = f"{_scheme}://{_host}:{_port}"
+        _alias = dir_obj.alias
+        _is_admin = bool(session.get("admin"))
+        _is_dir_admin = bool(session.get("dir_admin_" + base_dir))
+        accounts = []  # (地址, 用户名, 密码说明, 权限)
+        if _is_admin:
+            accounts.append((f"{_base}/", "admin", "超级管理员密码", "全部目录读写"))
+            if config.global_password:
+                accounts.append((f"{_base}/", "guest", "全局访问密码", "全部目录只读"))
+            if getattr(dir_obj, "admin_password", None):
+                accounts.append((f"{_base}/{_alias}", f"dir_{_alias}", "该目录管理密码", "该目录读写"))
+            if getattr(dir_obj, "password", None):
+                accounts.append((f"{_base}/{_alias}", _alias, "该目录访问密码", "该目录只读"))
+        elif _is_dir_admin:
+            if getattr(dir_obj, "admin_password", None):
+                accounts.append((f"{_base}/{_alias}", f"dir_{_alias}", "该目录管理密码", "该目录读写"))
+            if getattr(dir_obj, "password", None):
+                accounts.append((f"{_base}/{_alias}", _alias, "该目录访问密码", "该目录只读"))
+            if config.global_password:
+                accounts.append((f"{_base}/", "guest", "全局访问密码", "全部目录只读"))
+        else:
+            # 普通访客：仅提示其可用的访问方式
+            if getattr(dir_obj, "password", None):
+                accounts.append((f"{_base}/{_alias}", _alias, "该目录访问密码", "该目录只读"))
+            if config.global_password:
+                accounts.append((f"{_base}/", "guest", "全局访问密码", "全部目录只读"))
+        if accounts:
+            webdav_hint = {
+                "base": _base,
+                "alias": _alias,
+                "accounts": accounts,
+                "note": "密码即对应账号在网页登录时使用的密码，不会在此明文显示。"
+                        "启用 Caddy HTTPS 后本地址同样加密（无需再手动配置反向代理）。",
+            }
+
     return render_template('directory.html',
                            items=items,
                            nav_path=nav_path,
@@ -846,7 +891,8 @@ def list_dir(dirname):
                            current_path=dirname,
                            dir_obj=dir_obj, pageMark=f'{base_dir}目录浏览',
                            admin_totp_enabled=bool(config.admin_totp_secret),
-                           admin_totp_only=bool(getattr(config, 'admin_totp_only', False)))
+                           admin_totp_only=bool(getattr(config, 'admin_totp_only', False)),
+                           webdav_hint=webdav_hint)
 
 
 @flask_app.route('/api/search/<alias>')

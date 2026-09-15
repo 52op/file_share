@@ -22,6 +22,13 @@ try:
 except Exception:
     pass
 
+# 收集 wsgidav 的非 .py 资源（dir_browser/htdocs 等静态文件），
+# 否则打包后 dir_browser 中间件启动时找不到 htdocs_path
+try:
+    datas += collect_data_files("wsgidav")
+except Exception:
+    pass
+
 loguru_hiddenimports = []
 try:
     loguru_hiddenimports = collect_submodules("loguru")

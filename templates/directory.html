@@ -311,6 +311,13 @@
                             <a href="{{ url_for('list_dir', dirname=item.path) }}">{{ item.name }}</a>
                         {% else %}
                             {{ item.name }}
+                            {% if loop.last and webdav_hint %}
+                                <button type="button" class="btn btn-sm btn-outline-secondary ms-2 py-0 px-2 rounded-pill"
+                                        id="webdavHintBtn" title="WebDAV 挂载信息" tabindex="0"
+                                        style="font-size:.75rem;vertical-align:1px;border-style:dashed;">
+                                    <i class="bi bi-hdd-network me-1"></i>WebDAV
+                                </button>
+                            {% endif %}
                         {% endif %}
                     </li>
                 {% endfor %}
@@ -4017,6 +4024,41 @@
         }
 
         /* 移动文件逻辑 end */
+    </script>
+    <script>
+        /* WebDAV 挂载提示（面包屑图标 hover/聚焦显示） */
+        (function () {
+            var hint = {{ webdav_hint | tojson }};
+            if (!hint) return;
+            var btn = document.getElementById('webdavHintBtn');
+            if (!btn || typeof bootstrap === 'undefined' || !bootstrap.Popover) return;
+            function esc(s) {
+                return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            }
+            function buildContent() {
+                var rows = hint.accounts.map(function (a) {
+                    return '<tr>' +
+                        '<td class="text-break"><code>' + esc(a[0]) + '</code></td>' +
+                        '<td><code>' + esc(a[1]) + '</code></td>' +
+                        '<td>' + esc(a[2]) + '</td>' +
+                        '<td>' + esc(a[3]) + '</td></tr>';
+                }).join('');
+                return '<div style="max-width:560px;min-width:330px">' +
+                    '<table class="table table-sm small mb-2 align-middle">' +
+                    '<thead><tr><th>挂载地址</th><th>用户名</th><th>密码</th><th>权限</th></tr></thead>' +
+                    '<tbody>' + rows + '</tbody></table>' +
+                    '<div class="text-muted small">' + esc(hint.note) + '</div>' +
+                    '</div>';
+            }
+            new bootstrap.Popover(btn, {
+                html: true,
+                title: '<i class="bi bi-hdd-network me-1"></i>WebDAV',
+                content: buildContent,
+                placement: 'bottom-start',
+                trigger: "hover focus",
+                container: 'body'
+            });
+        })();
     </script>
     <!--通用footer开始-->
 {% endblock %}

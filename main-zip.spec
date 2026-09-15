@@ -31,6 +31,15 @@ if (PROJECT_ROOT / "vendor" / "nssm.exe").exists():
 if TKDND2_DATA_DIR and TKDND2_DATA_DIR.exists():
     datas.append((str(TKDND2_DATA_DIR), "tkinterdnd2"))
 
+# 收集 wsgidav 的非 .py 资源（dir_browser/htdocs 等静态文件），
+# 否则打包后 dir_browser 中间件启动时找不到 htdocs_path 而报 Invalid dir_browser htdocs_path
+try:
+    from PyInstaller.utils.hooks import collect_data_files
+
+    datas += collect_data_files("wsgidav")
+except Exception:
+    pass
+
 a = Analysis(
     ["main.py"],
     pathex=[str(PROJECT_ROOT)],

@@ -22,6 +22,13 @@ try:
 except Exception:
     pass
 
+# 收集 wsgidav 的非 .py 资源（dir_browser/htdocs 等静态文件）
+# 否则打包后 dir_browser 中间件启动时找不到 htdocs_path 而报 Invalid dir_browser htdocs_path
+try:
+    datas += collect_data_files("wsgidav")
+except Exception:
+    pass
+
 # 内嵌 NSSM（Windows 服务包装器）：GUI 安装后台服务时用 NSSM 托管 headless-server，
 # 规避 PyInstaller 打包应用在不同 Windows 版本上的 SCM 服务握手兼容问题
 if (project_root / "vendor" / "nssm.exe").exists():

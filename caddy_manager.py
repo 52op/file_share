@@ -85,6 +85,26 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def webdav_internal_addr(config):
+    """WebDAV 服务实际绑定地址 (host, port)。
+
+    Caddy HTTPS 模式下，由 Caddy 对外监听 config.webdav_port（TLS 反代），
+    WebDAV 服务改绑 127.0.0.1 上的内部端口，避免「同一端口双重绑定」以及
+    Caddy 反代指向自身造成的回环。非 Caddy 模式则直接监听 0.0.0.0:webdav_port。
+    """
+    port = int(getattr(config, "webdav_port", 8081) or 8081)
+    if getattr(config, "ssl_enabled", False) and getattr(config, "caddy_enabled", False):
+        internal = port + 1
+        busy = {
+            int(getattr(config, "port", 0) or 0),
+            int(getattr(config, "ssl_port", 0) or 0),
+        }
+        while internal in busy:
+            internal += 1
+        return "127.0.0.1", internal
+    return "0.0.0.0", port
+
+
 class CaddyManager:
     """Caddy 子进程管理：检测、Caddyfile 生成、启停、状态查询、一键下载"""
 
@@ -219,6 +239,18 @@ class CaddyManager:
             f"\treverse_proxy 127.0.0.1:{target_port}\n"
             "}\n"
         )
+
+        # WebDAV 独立端口：启用 WebDAV 时对外提供 https://domain:webdav_port（TLS 反代）
+        if getattr(self.config, "webdav_enabled", False):
+            wd_port = int(getattr(self.config, "webdav_port", 0) or 0)
+            if wd_port and wd_port != ssl_port:
+                _wd_host, wd_internal = webdav_internal_addr(self.config)
+                caddyfile += (
+                    f"\n{domain}:{wd_port} {{\n"
+                    f"{tls_block}"
+                    f"\treverse_proxy {_wd_host}:{wd_internal}\n"
+                    "}\n"
+                )
         return caddyfile
 
     def write_caddyfile(self):

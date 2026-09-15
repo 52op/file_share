@@ -1518,11 +1518,8 @@ class FileShareService(win32serviceutil.ServiceFramework):
             # PyInstaller 单文件版启动时需要解压全部资源，配置加载、防火墙、证书监控等耗时步骤放到 RUNNING 之后执行。
             self.ReportServiceStatus(win32service.SERVICE_RUNNING)
 
-            # 添加防火墙规则（HTTP + HTTPS 合并为一条，逗号分隔）
-            firewall_ports = [config.port]
-            if config.ssl_enabled and config.ssl_port and config.ssl_port != config.port:
-                firewall_ports.append(config.ssl_port)
-            self.add_firewall_rule(firewall_ports)
+            # 添加防火墙规则（HTTP + HTTPS + WebDAV 合并为一条，逗号分隔）
+            apply_firewall_rules(collect_firewall_ports())
 
             if config.auto_cleanup and not is_cleanup_running():
                 start_cleanup_thread()  # 启动清理线程
@@ -1777,6 +1774,55 @@ class FileShareService(win32serviceutil.ServiceFramework):
                 self.logger.info(f"删除防火墙规则 {name} 失败: {e}")
 
 
+def apply_firewall_rules(ports):
+    """为端口列表统一添加防火墙放行规则（入站+出站，规则名 File_Share_Port）。
+
+    模块级函数，供 headless 模式与 Windows 服务模式共用；端口列表应包含
+    HTTP、HTTPS(Caddy) 与 WebDAV 对外端口。失败静默（无管理员权限时忽略）。
+
+    注意：逐端口创建规则——部分 Windows 版本的 netsh 不接受
+    `localport=a,b,c` 逗号列表（报「指定的值无效」），单端口最兼容。
+    """
+    try:
+        ports = list(dict.fromkeys(int(p) for p in ports if p))
+        if not ports:
+            return
+        rule_name = "File_Share_Port"
+        subprocess.run(
+            f'netsh advfirewall firewall delete rule name="{rule_name}"',
+            shell=True, capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        for p in ports:
+            for direction in ("in", "out"):
+                subprocess.run(
+                    f'netsh advfirewall firewall add rule name="{rule_name}" '
+                    f"dir={direction} action=allow protocol=TCP localport={p}",
+                    shell=True, capture_output=True, text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+        try:
+            import loguru
+
+            loguru.logger.info(
+                f"已配置防火墙放行规则 {rule_name}: 端口 {','.join(map(str, ports))}"
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def collect_firewall_ports():
+    """汇总需要放行的对外端口：HTTP + HTTPS + WebDAV（启用时），去重保序。"""
+    ports = [config.port]
+    if config.ssl_enabled and config.ssl_port and config.ssl_port != config.port:
+        ports.append(config.ssl_port)
+    if getattr(config, "webdav_enabled", False) and getattr(config, "webdav_port", None):
+        ports.append(config.webdav_port)
+    return list(dict.fromkeys(ports))
+
+
 def run_headless_server():
     """无界面服务器模式（--headless-server）：不创建 GUI、不走 Windows 服务握手，
     仅加载配置并启动 HTTP/HTTPS 服务器后阻塞运行。
@@ -1880,6 +1926,7 @@ def run_headless_server():
             pass
 
     _append_svc_diag("headless 服务器已创建: " + ", ".join(n for n, _ in servers))
+    apply_firewall_rules(collect_firewall_ports())  # 放行 HTTP/HTTPS/WebDAV 端口
     _maybe_start_webdav()  # 可选 WebDAV 独立端口
     executor = ThreadPoolExecutor(max_workers=max(1, len(servers)))
     futures = [executor.submit(run) for _, run in servers]
@@ -2107,6 +2154,30 @@ class FileShareApp:
             width=20,
         )
         self.ssl_settings_btn.pack(side=LEFT, padx=(0, 10))
+
+        # WebDAV（可选，独立端口）——放在 SSL 设置按钮右侧
+        self.webdav_var = tk.BooleanVar(value=bool(getattr(config, "webdav_enabled", False)))
+        self.webdav_checkbox = ttk.Checkbutton(
+            theme_frame,
+            text="WebDAV",
+            variable=self.webdav_var,
+            command=self._sync_webdav_config,
+            style="squared-toggle",
+        )
+        self.webdav_checkbox.pack(side=LEFT, padx=(0, 4))
+        ttk.Label(theme_frame, text="端口").pack(side=LEFT, padx=(4, 2))
+        self.webdav_port_var = tk.StringVar(value=str(getattr(config, "webdav_port", 8081)))
+        self.webdav_port_entry = ttk.Entry(
+            theme_frame, width=6, textvariable=self.webdav_port_var
+        )
+        self.webdav_port_entry.pack(side=LEFT, padx=(0, 10))
+        ToolTip(
+            self.webdav_checkbox,
+            "启用后独立端口提供 WebDAV 挂载\n"
+            "（Windows 映射网络驱动器 / 手机文件管理器）\n"
+            "用户名：admin=管理密码(全读写)、dir_<目录>＝目录管理密码(该目录读写)、\n"
+            "guest=全局密码(全只读)、<目录>=目录访问密码(该目录只读)",
+        )
 
         # 减小水平间距
         self.dark_icon.pack(side=RIGHT, padx=(0, 2))
@@ -2448,30 +2519,6 @@ class FileShareApp:
             style="secondary.TButton",
         )
         self.page_settings_btn.pack(side=LEFT, pady=10, padx=(10, 0))
-
-        # WebDAV（可选，独立端口）
-        webdav_frame = ttk.Frame(self.main_frame)
-        webdav_frame.pack(fill="x", padx=10)
-        self.webdav_var = tk.BooleanVar(value=bool(getattr(config, "webdav_enabled", False)))
-        self.webdav_checkbox = ttk.Checkbutton(
-            webdav_frame,
-            text="启用 WebDAV",
-            variable=self.webdav_var,
-            command=self._sync_webdav_config,
-            style="squared-toggle",
-        )
-        self.webdav_checkbox.pack(side=LEFT, pady=(0, 4))
-        ttk.Label(webdav_frame, text="端口").pack(side=LEFT, padx=(12, 2))
-        self.webdav_port_var = tk.StringVar(value=str(getattr(config, "webdav_port", 8081)))
-        self.webdav_port_entry = ttk.Entry(webdav_frame, width=8, textvariable=self.webdav_port_var)
-        self.webdav_port_entry.pack(side=LEFT, pady=(0, 4))
-        ToolTip(
-            self.webdav_checkbox,
-            "启用后独立端口提供 WebDAV 挂载\n"
-            "（Windows 映射网络驱动器 / 手机文件管理器）\n"
-            "用户名：admin=管理密码(全读写)、dir_<目录>＝目录管理密码(该目录读写)、\n"
-            "guest=全局密码(全只读)、<目录>=目录访问密码(该目录只读)",
-        )
 
     def _sync_webdav_config(self, quiet=False):
         """将 GUI WebDAV 开关/端口同步到 config 并保存（端口修改后启动前调用）。"""

@@ -17,3 +17,5 @@ config.key
 _admin_page.html
 screenshot_debug.png
 temp_tools/
+
+stats/
