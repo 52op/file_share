@@ -1795,6 +1795,9 @@ def _netsh_add_rule(name, protocol, port, direction):
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
             creationflags=subprocess.CREATE_NO_WINDOW, timeout=90,
+            # 必须显式 DEVNULL：PyInstaller windowed 程序无有效 stdin 句柄，
+            # 默认继承会导致子进程启动即报 WinError 6(句柄无效)
+            stdin=subprocess.DEVNULL,
         )
         if r.returncode == 0:
             return True, ""
@@ -1827,6 +1830,7 @@ def apply_firewall_rules(ports, udp_ports=None):
             f'netsh advfirewall firewall delete rule name="{rule_name}"',
             shell=True, capture_output=True, text=True,
             creationflags=subprocess.CREATE_NO_WINDOW, timeout=90,
+            stdin=subprocess.DEVNULL,  # 防 windowed 程序继承无效 stdin 句柄(WinError 6)
         )
     except Exception:
         pass

@@ -67,7 +67,7 @@ def test_apply_firewall_rules_builds_commands(monkeypatch):
         stderr = ""
 
     def fake_run(cmd, shell=False, capture_output=False, text=False,
-                 creationflags=0, timeout=None):
+                 creationflags=0, timeout=None, stdin=None):
         calls.append(cmd)
         return R()
 
@@ -94,7 +94,7 @@ def test_apply_firewall_rules_reports_failure(monkeypatch):
         stderr = "requested operation requires elevation (Run as administrator)"
 
     def fake_run(cmd, shell=False, capture_output=False, text=False,
-                 creationflags=0, timeout=None):
+                 creationflags=0, timeout=None, stdin=None):
         return R()
 
     monkeypatch.setattr("main.subprocess.run", fake_run)
