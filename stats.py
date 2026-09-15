@@ -61,6 +61,7 @@ def configure(dirpath):
     _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts)")
     _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
     _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(ip, ts)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type_file ON events(type, file)")
     _conn.commit()
     atexit.register(_flush_now)
 
@@ -281,6 +282,42 @@ def view_summary(start=None, end=None, top=10):
         "top_views": [{"file": f, "count": c} for f, c in views],
         "top_dirs": [{"dir": f, "count": c} for f, c in dirs],
     }
+
+
+def _visitor_where(start=None, end=None):
+    """首页访问事件的 WHERE 子句 + 参数（type='view_dir' 且 file='/'）。"""
+    clauses = ["type='view_dir'", "file='/'"]
+    params = []
+    if start is not None:
+        clauses.append("ts>=?")
+        params.append(int(start))
+    if end is not None:
+        clauses.append("ts<=?")
+        params.append(int(end))
+    return "WHERE " + " AND ".join(clauses), params
+
+
+def visitor_total(start=None, end=None):
+    """首页访问总数（来访计数）。"""
+    _ensure()
+    _flush_before_read()
+    w, params = _visitor_where(start, end)
+    with _lock:
+        return _conn.execute(f"SELECT COUNT(*) FROM events {w}", params).fetchone()[0]
+
+
+def visitor_countries(start=None, end=None):
+    """按国家聚合首页访问（国家存于 detail 字段，英文名）。返回 [{country, count}]。"""
+    _ensure()
+    _flush_before_read()
+    w, params = _visitor_where(start, end)
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT detail, COUNT(*) FROM events {w} AND detail!='' "
+            "GROUP BY detail ORDER BY COUNT(*) DESC",
+            params,
+        ).fetchall()
+    return [{"country": d, "count": c} for d, c in rows]
 
 
 def delete_range(start=None, end=None):

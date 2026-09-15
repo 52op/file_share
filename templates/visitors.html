@@ -1,0 +1,100 @@
+{% extends "header.html" %}
+{% block content %}
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h4 class="mb-0"><i class="bi bi-globe2 me-2"></i>来访分布</h4>
+            <span class="text-muted small"><i class="bi bi-eye me-1"></i>来访 <span
+                    id="visitorTotal" class="fw-semibold">-</span> 次</span>
+        </div>
+        <div class="card">
+            <div class="card-body p-2">
+                <div id="visitorMap" style="width:100%;height:72vh;"></div>
+            </div>
+        </div>
+        <div class="text-muted small mt-2">
+            <i class="bi bi-info-circle me-1"></i>按来访 IP 所属国家/地区统计（首页访问事件），悬停查看数量。
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/vendor/echarts.min.js"></script>
+    <script>
+        /* 来访分布世界地图：worldEN(英文键) + nameMap(中文显示) */
+        (function () {
+            var el = document.getElementById('visitorMap');
+            if (!el || typeof echarts === 'undefined') return;
+            var chart = echarts.init(el);
+            window.addEventListener('resize', function () { chart.resize(); });
+
+            fetch('/static/map/worldEN.json')
+                .then(function (r) { return r.json(); })
+                .then(function (geo) {
+                    echarts.registerMap('world', geo);
+                    return Promise.all([
+                        fetch('/api/visitors/map').then(function (r) { return r.json(); }),
+                        fetch('/static/map/country-name-map-zh.json').then(function (r) { return r.json(); })
+                    ]);
+                })
+                .then(function (res) {
+                    var data = res[0], zhNames = res[1];
+                    var total = data.total || 0;
+                    var tEl = document.getElementById('visitorTotal');
+                    if (tEl) tEl.textContent = total.toLocaleString();
+
+                    var perName = {};
+                    (data.countries || []).forEach(function (c) {
+                        perName[c.country] = c.count;
+                    });
+                    var mapData = Object.keys(perName).map(function (name) {
+                        return { name: name, value: perName[name] };
+                    });
+                    var maxV = mapData.reduce(function (m, d) { return Math.max(m, d.value); }, 0);
+
+                    chart.setOption({
+                        backgroundColor: 'transparent',
+                        tooltip: {
+                            trigger: 'item',
+                            formatter: function (params) {
+                                var zh = (zhNames && zhNames[params.name]) || params.name;
+                                return zh + '<br/>来访: <b>' + (params.value || 0) + '</b> 次';
+                            }
+                        },
+                        visualMap: {
+                            min: 0,
+                            max: Math.max(1, maxV),
+                            left: 16,
+                            bottom: 16,
+                            text: ['多', '少'],
+                            calculable: false,
+                            itemHeight: 120,
+                            inRange: {
+                                color: ['#eef2ff', '#c7d2fe', '#93b4f8', '#5b8def', '#1f5bd6']
+                            }
+                        },
+                        series: [{
+                            type: 'map',
+                            map: 'world',
+                            roam: true,
+                            scaleLimit: { min: 1, max: 12 },
+                            selectedMode: false,
+                            label: { show: false },
+                            emphasis: {
+                                label: { show: true },
+                                itemStyle: {
+                                    areaColor: '#ffb84d',
+                                    shadowBlur: 8,
+                                    shadowColor: 'rgba(0,0,0,.15)'
+                                }
+                            },
+                            data: mapData
+                        }]
+                    });
+                    window.dispatchEvent(new Event('resize'));
+                })
+                .catch(function () {
+                    el.innerHTML = '<div class="text-center text-muted py-5"><i class="bi bi-exclamation-circle me-2"></i>地图加载失败</div>';
+                });
+        })();
+    </script>
+{% endblock %}

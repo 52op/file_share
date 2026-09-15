@@ -28,6 +28,7 @@ from waitress.server import create_server  # 生产环境使用
 from main import flask_app, config, format_file_size, partial_download, send_file_generator, \
     get_client_info, secure_filename_cn, safe_relative_path, ShareDirectory, password_change_timestamps, get_app_path
 from share_links import ShareManager   # 这个文件被全部引入了main.py main.py已经引入了这个，所以注释
+import geoip  # IP→国家离线解析（xdb 缺失时静默禁用）
 from firewall import IPLimiter
 import pyotp
 import stats
@@ -132,9 +133,36 @@ def _current_role(alias=None):
     return 'anonymous'
 
 
+def _visitor_ip():
+    """获取真实客户端 IP（修复 Caddy 反代下 remote_addr 恒为 127.0.0.1 的问题）。
+
+    Caddy reverse_proxy 反代后，后端 request.remote_addr 是 Caddy 地址（如
+    127.0.0.1），导致统计/审计记录的所有来源 IP 都是 127.0.0.1。
+    处理：当 remote_addr 为私网/回环地址（说明请求可能经本地反代）且请求带
+    X-Forwarded-For 时，取 XFF 第一跳 IP（最接近真实客户端）。其余情况用
+    remote_addr。IPLimiter 封禁逻辑不在此列（保持原判定）。
+    """
+    ip = (request.remote_addr or '').strip()
+    try:
+        import ipaddress
+
+        addr = ipaddress.ip_address(ip or '0.0.0.0')
+        is_proxy = addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+    except ValueError:
+        is_proxy = False
+    if is_proxy:
+        xff = request.headers.get('X-Forwarded-For', '')
+        if xff:
+            first = xff.split(',', 1)[0].strip()
+            first = first.split(':', 1)[0].strip()  # 去掉可能的端口
+            if first and first.lower() not in ('unknown', ''):
+                return first
+    return ip
+
+
 def _req_client():
     return {
-        'ip': request.remote_addr or '',
+        'ip': _visitor_ip(),
         'ua': (request.user_agent.string or '') if request.user_agent else '',
     }
 ip_limiter = IPLimiter(persist_file=os.path.join(get_app_path(), "blocked_ips.json"))
@@ -718,9 +746,48 @@ def index():
         }
         for dir_obj in config.shared_dirs.values()
     ]
+
+    # 首页访问统计（来访计数 / 全球分布）：记录为目录访问“/”，国家(英文)存 detail。
+    # 经 Caddy 反代访问时 _visitor_ip 取 X-Forwarded-For 第一跳，修复来源 IP 恒为 127.0.0.1 的问题。
+    try:
+        stats.record_view_dir(
+            '/', role=_current_role(''), alias='',
+            detail=geoip.ip_country(_visitor_ip()) or '',
+            **_req_client())
+    except Exception:
+        pass
+
     return render_template('index.html', dirs=dirs, pageMark=f'首页',
                            admin_totp_enabled=bool(config.admin_totp_secret),
                            admin_totp_only=bool(getattr(config, 'admin_totp_only', False)))
+
+
+@flask_app.route('/api/visitors/summary')
+def visitors_summary():
+    """首页来访总数（PV 口径，公开）。"""
+    try:
+        return jsonify({'total': stats.visitor_total()})
+    except Exception:
+        return jsonify({'total': 0})
+
+
+@flask_app.route('/api/visitors/map')
+def visitors_map():
+    """按国家聚合的首页访问分布（公开，仅国家名+数量）。total 与 summary 一致（全量 PV）。"""
+    try:
+        countries = stats.visitor_countries()
+        return jsonify({
+            'countries': countries,
+            'total': stats.visitor_total(),
+        })
+    except Exception:
+        return jsonify({'countries': [], 'total': 0})
+
+
+@flask_app.route('/visitors')
+def visitors_page():
+    """来访分布：全球地图页（公开）。"""
+    return render_template('visitors.html', pageMark='来访分布')
 
 
 @flask_app.route('/check_password/<path:alias>', methods=['POST'])

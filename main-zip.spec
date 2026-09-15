@@ -88,6 +88,8 @@ a = Analysis(
         "wsgidav.fs_dav_provider",
         "wsgidav.mw.base_mw",
         "defusedxml",
+        "ip2region.searcher",
+        "ip2region.util",
     ],
     hookspath=[],
     runtime_hooks=[],

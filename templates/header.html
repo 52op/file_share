@@ -426,6 +426,13 @@
         <footer
             class="container-fluid py-3 mt-4 border-top text-center text-muted small"
         >
+            <div class="d-flex justify-content-center align-items-center gap-3 flex-wrap">
+                <a href="/visitors" class="visitor-count text-muted text-decoration-none"
+                   title="查看来访分布地图">
+                    <i class="bi bi-globe2 me-1"></i><i class="bi bi-eye me-1"></i>来访:
+                    <span id="visitorTotal" class="fw-semibold">-</span>&nbsp;次
+                </a>
+            </div>
             <div>Copyright (c) 2025 52op(letvar)</div>
             <div>
                 <a
@@ -437,6 +444,22 @@
                 </a>
             </div>
         </footer>
+
+        <script>
+            // 来访计数（公开）：异步加载，失败静默不影响页面
+            (function () {
+                var el = document.getElementById('visitorTotal');
+                if (!el) return;
+                fetch('/api/visitors/summary')
+                    .then(function (r) { return r.ok ? r.json() : null; })
+                    .then(function (d) {
+                        if (d && typeof d.total === 'number') {
+                            el.textContent = d.total.toLocaleString();
+                        }
+                    })
+                    .catch(function () {});
+            })();
+        </script>
 
         <script>
             // 全局处理：模态框隐藏前若焦点仍在框内，先把焦点移出，

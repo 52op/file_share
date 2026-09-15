@@ -31,3 +31,4 @@ pyinstaller-hooks-contrib==2022.15
 # WebDAV（可选功能，默认关闭；独立端口 8081）
 wsgidav==4.3.5
 defusedxml==0.7.1
+py-ip2region==3.0.4
